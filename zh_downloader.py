@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "5.5.1"
+APP_VER     = "5.5.2"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1817,12 +1817,10 @@ class App:
             "no_warnings":                False,
             "extractor_args":             {
                 "youtube": {
-                    # 'tv' + 'tv_simply' bypass YouTube PoToken — give 1080p without cookies.
-                    # mweb/ios fallback. android last (heavily nerfed).
-                    "player_client": ["default", "tv", "tv_simply", "mweb", "ios", "web_safari", "android"],
-                    # NOTE: don't allow 'missing_pot' — those formats return 404
-                    # fragments without a PoToken provider. Stick with formats
-                    # that actually serve data.
+                    # android_vr bypasses PoToken/SABR — gives full 4K without
+                    # cookies, Node.js, or PoToken provider. Tested working 2025-10+.
+                    # tv_simply/tv/mweb as fallback for edge cases.
+                    "player_client": ["android_vr", "tv_simply", "tv", "mweb", "default"],
                     "max_comments": ["0"],
                 },
             },
