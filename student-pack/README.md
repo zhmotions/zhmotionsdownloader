@@ -18,7 +18,7 @@ Welcome to the **ZH Downloader Student Pack** — everything you need to install
 
 ### Step 1 — Download installer
 
-Go to: **[Latest Release](https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4/releases/latest)**
+Go to: **[Latest Release](https://github.com/zhmotions/zhmotionsdownloader/releases/latest)**
 
 | Platform | File to download |
 |----------|------------------|

@@ -53,7 +53,7 @@ if [[ "$ans" == "y" || "$ans" == "Y" ]]; then
     git tag -f v4.0.0
     git push origin v4.0.0 --force
     echo
-    echo "Release in progress: https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4/actions"
+    echo "Release in progress: https://github.com/zhmotions/zhmotionsdownloader/actions"
 fi
 
 echo

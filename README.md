@@ -13,7 +13,7 @@
   <img src="https://img.shields.io/badge/version-5.4.3-d4a13a?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-5b1a1f?style=flat-square" alt="platform">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="python">
-  <img src="https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4/actions/workflows/build-win.yml/badge.svg" alt="build">
+  <img src="https://github.com/zhmotions/zhmotionsdownloader/actions/workflows/build-win.yml/badge.svg" alt="build">
 </p>
 
 ---
@@ -22,9 +22,9 @@
 
 | Platform | File | Notes |
 |----------|------|-------|
-| **Windows** | [ZHDownloader.exe](https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4/releases/latest) | Double-click to run |
-| **macOS** | [ZHDownloader.pkg](https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4/releases/latest) | Double-click → Continue → Install |
-| **macOS** | [ZHDownloader.dmg](https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4/releases/latest) | Drag to Applications |
+| **Windows** | [ZHDownloader.exe](https://github.com/zhmotions/zhmotionsdownloader/releases/latest) | Double-click to run |
+| **macOS** | [ZHDownloader.pkg](https://github.com/zhmotions/zhmotionsdownloader/releases/latest) | Double-click → Continue → Install |
+| **macOS** | [ZHDownloader.dmg](https://github.com/zhmotions/zhmotionsdownloader/releases/latest) | Drag to Applications |
 
 > **No Python required.** Just download and run.
 
@@ -72,7 +72,7 @@
 
 ### Linux
 ```bash
-git clone https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4.git
+git clone https://github.com/zhmotions/zhmotionsdownloader.git
 cd ZHDownloader-v4
 bash ZH-Downloader-Linux.sh
 ```
@@ -116,7 +116,7 @@ The pre-built `.exe` and `.pkg` already include ffmpeg — no separate install n
 
 ```bash
 # Clone
-git clone https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4.git
+git clone https://github.com/zhmotions/zhmotionsdownloader.git
 cd ZHDownloader-v4
 
 # Windows
