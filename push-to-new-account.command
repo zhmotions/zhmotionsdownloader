@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")"
 
 NEW_USER="zhmotions"
-NEW_REPO="ZHDownloader"
+NEW_REPO="zhmotionsdownloader"
 
 echo ""
 echo " ============================================================"
