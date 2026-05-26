@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "5.4.2"
+APP_VER     = "5.4.3"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -510,7 +510,7 @@ class App:
 
         self.cfg       = jload(CFG_PATH, {
             "dir":DEFAULT_DIR, "fmt":"4k", "cookies":default_cookies, "clip":True,
-            "theme":"Light", "concurrent":2, "rate_kbps":0, "categorize":False,
+            "theme":"Light", "concurrent":3, "rate_kbps":0, "categorize":False,
             "completion_sound":True, "shutdown_after":False, "conflict":"rename",
         })
         # Apply theme
@@ -1604,8 +1604,17 @@ class App:
         self._paused      = False
         self._done_files  = []
         self._spd_history = []
-        self._items = [DL(u,i+1,len(urls), self._referers.get(u,"")) for i,u in enumerate(urls)]
-        self._build_rows(self._items)
+        # Reuse existing items if they match the URL list (scheduler preview case).
+        # Otherwise rebuild from scratch.
+        existing_urls = [i.url for i in self._items] if self._items else []
+        if existing_urls != urls:
+            self._items = [DL(u,i+1,len(urls), self._referers.get(u,"")) for i,u in enumerate(urls)]
+            self._build_rows(self._items)
+        else:
+            # Reset state on existing items
+            for it in self._items:
+                it.status = "waiting"; it.pct = 0; it.speed_v = 0; it.eta_v = None
+                self._mq.put(("item_up", it))
         self.btn_dl.configure(state="disabled", text="Running...")
         self.btn_cancel.configure(state="normal")
         self.btn_pause.configure(state="normal")
@@ -1614,8 +1623,9 @@ class App:
         self.state["queue"]=[{"url":u,"dir":out,"fmt":fk} for u in urls]
         jsave(STATE_PATH,self.state)
 
-        # Concurrent worker pool
-        max_par = max(1, min(MAX_CONCURRENT, int(self.cfg.get("concurrent",2))))
+        # Concurrent worker pool — default 3 for visible parallelism
+        max_par = max(1, min(MAX_CONCURRENT, int(self.cfg.get("concurrent",3))))
+        self.log(f"[start] queue={len(self._items)} items, concurrent={max_par}")
         sem = threading.Semaphore(max_par)
         self._workers = []
         self._active_count = 0

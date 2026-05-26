@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-5.4.2-d4a13a?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-5.4.3-d4a13a?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-5b1a1f?style=flat-square" alt="platform">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=flat-square" alt="python">
   <img src="https://github.com/zhmotionspanel-cmyk/ZHDownloader-v4/actions/workflows/build-win.yml/badge.svg" alt="build">
@@ -155,8 +155,8 @@ Find files under **Actions → latest run → Artifacts**.
 
 To create a release with all files attached:
 ```bash
-git tag v5.4.2
-git push origin v5.4.2
+git tag v5.4.3
+git push origin v5.4.3
 ```
 
 ---
