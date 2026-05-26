@@ -20,15 +20,26 @@ if ! command -v gh >/dev/null 2>&1; then
     exit 1
 fi
 
-# 2. Login to new account if not already
-echo " [1/6] Checking auth for $NEW_USER..."
-if ! gh auth status 2>&1 | grep -q "Logged in to github.com account $NEW_USER"; then
-    echo " [!] Not logged in as $NEW_USER. Opening browser to authenticate..."
-    gh auth login --hostname github.com --git-protocol https --web
-fi
+# 2. Force fresh auth as new user
+echo " [1/6] Authenticating as $NEW_USER..."
+echo "       Browser will open. LOG IN AS '$NEW_USER' (not zhmotionspanel-cmyk)."
+echo ""
+gh auth login --hostname github.com --git-protocol https --web
 
 # Switch to new account
 gh auth switch -u "$NEW_USER" 2>/dev/null || true
+
+# Verify active account
+ACTIVE=$(gh api /user --jq '.login' 2>/dev/null || echo "unknown")
+if [ "$ACTIVE" != "$NEW_USER" ]; then
+    echo " [!] Active account is '$ACTIVE', expected '$NEW_USER'."
+    echo "     Run: gh auth switch -u $NEW_USER"
+    exit 1
+fi
+echo " [OK] Authenticated as $NEW_USER"
+
+# Configure git credential to use gh
+gh auth setup-git 2>/dev/null || true
 
 # 3. Create repo if doesn't exist
 echo ""
