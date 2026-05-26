@@ -1820,7 +1820,9 @@ class App:
                     # 'tv' + 'tv_simply' bypass YouTube PoToken — give 1080p without cookies.
                     # mweb/ios fallback. android last (heavily nerfed).
                     "player_client": ["default", "tv", "tv_simply", "mweb", "ios", "web_safari", "android"],
-                    "formats": ["dashy", "missing_pot"],
+                    # NOTE: don't allow 'missing_pot' — those formats return 404
+                    # fragments without a PoToken provider. Stick with formats
+                    # that actually serve data.
                     "max_comments": ["0"],
                 },
             },
