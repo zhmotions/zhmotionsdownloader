@@ -88,12 +88,30 @@ if [ "$need_install" = "1" ]; then
   pip install --quiet Pillow tkinterdnd2 pystray 2>/dev/null || true
   # macOS tray needs PyObjC
   pip install --quiet "pyobjc-framework-Cocoa>=10.0" "pyobjc-framework-Quartz>=10.0" 2>/dev/null || true
+  # YouTube PoToken plugin — needs Node.js
+  pip install --quiet "bgutil-ytdlp-pot-provider>=1.1.0" 2>/dev/null || true
   touch .venv/.installed
   echo " [OK] Packages installed!"
 else
   # shellcheck disable=SC1091
   source .venv/bin/activate
   echo " [OK] Dependencies ready."
+fi
+
+# ── Step 2b: Node.js for YouTube PoToken ─────────────────────────
+echo ""
+echo " [2b] Checking Node.js (for YouTube downloads)..."
+if ! command -v node >/dev/null 2>&1; then
+  echo " [!] Node.js missing — YouTube downloads may not work."
+  if command -v brew >/dev/null 2>&1; then
+    echo "      Installing Node.js via Homebrew (1-2 min)..."
+    brew install -q node 2>/dev/null || true
+  else
+    show_dialog "Node.js missing — YouTube limited.\n\nInstall manually: https://nodejs.org/\n\nApp still works for Vimeo, Artgrid, etc." "Continue Anyway"
+  fi
+fi
+if command -v node >/dev/null 2>&1; then
+  echo " [OK] Node.js: $(node --version)"
 fi
 
 # ── Step 3: Check ffmpeg ─────────────────────────────────────────
