@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "5.5.0"
+APP_VER     = "5.5.1"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -2723,9 +2723,27 @@ class _Log:
     def error(self,m):   self.a.log(f"[error] {m}")
 
 
+def _prepend_bundled_bins_to_path():
+    """Add PyInstaller bundle dir to PATH so bundled node/ffmpeg/ffprobe
+    are findable by yt-dlp + bgutil-pot plugin subprocess calls."""
+    bundle_dirs = []
+    if hasattr(sys, "_MEIPASS"):
+        bundle_dirs.append(str(Path(sys._MEIPASS)))
+    if getattr(sys, "frozen", False):
+        bundle_dirs.append(str(Path(sys.executable).parent))
+    if not bundle_dirs: return
+    sep = ";" if platform.system() == "Windows" else ":"
+    current = os.environ.get("PATH", "")
+    extra = sep.join(d for d in bundle_dirs if d and d not in current)
+    if extra:
+        os.environ["PATH"] = extra + sep + current
+
 def main():
     """Staged startup so any optional feature failure can't crash app."""
     global HAS_DND
+
+    # Make bundled binaries findable (node for YouTube PoToken, etc)
+    _prepend_bundled_bins_to_path()
 
     # Stage 1: probe tkdnd binary BEFORE creating root.
     # Bundled .app may have Python wrapper but no native .dylib/.dll.
