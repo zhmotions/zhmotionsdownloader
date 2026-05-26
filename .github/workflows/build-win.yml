@@ -145,7 +145,6 @@ jobs:
             --collect-all tkinterdnd2 \
             --collect-all pystray \
             --collect-all PIL \
-            --collect-all bgutil_ytdlp_pot_provider \
             --hidden-import pystray._darwin \
             --hidden-import pystray._base \
             --hidden-import AppKit \
