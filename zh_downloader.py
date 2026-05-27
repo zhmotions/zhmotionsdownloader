@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "5.5.5"
+APP_VER     = "5.5.6"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1632,6 +1632,7 @@ class App:
         self._active_lock = threading.Lock()
 
         def runner(item):
+            # Phase 1: DOWNLOAD (semaphore-limited so YouTube/network isn't hammered)
             with sem:
                 if self._stop.is_set():
                     item.status = "paused" if self._paused else "cancelled"
@@ -1641,20 +1642,29 @@ class App:
                     self._mq.put(("concur", (self._active_count, len(self._items))))
                 try:
                     item.start_t = time.time()
-                    self._run_one(item, out, fk)
-                finally:
-                    item.end_t = time.time()
-                    with self._active_lock:
-                        self._active_count -= 1
-                        self._mq.put(("concur", (self._active_count, len(self._items))))
-                    # Record stats + history
-                    if item.status == "done":
-                        self._mq.put(("hist_add", item))
-                        self._mq.put(("stats_add", item))
-                    # Drop from resume queue
-                    self.state["queue"] = [q for q in self.state.get("queue",[])
-                                            if q.get("url") != item.url]
-                    jsave(STATE_PATH, self.state)
+                    self._run_download_only(item, out, fk)
+                except Exception as e:
+                    self.log(f"[error] {e}")
+                    item.status = "error"
+                    self._mq.put(("item_up", item))
+                with self._active_lock:
+                    self._active_count -= 1
+                    self._mq.put(("concur", (self._active_count, len(self._items))))
+
+            # Phase 2: POSTPROCESS (NO semaphore — next download already started)
+            # Transcode + rename + cleanup happen in this worker but slot freed.
+            if item.status not in ("error","paused","cancelled"):
+                try:
+                    self._postprocess(item, fk)
+                except Exception as e:
+                    self.log(f"[warn] postprocess: {e}")
+            item.end_t = time.time()
+            if item.status == "done":
+                self._mq.put(("hist_add", item))
+                self._mq.put(("stats_add", item))
+            self.state["queue"] = [q for q in self.state.get("queue",[])
+                                    if q.get("url") != item.url]
+            jsave(STATE_PATH, self.state)
 
         for item in self._items:
             t = threading.Thread(target=runner, args=(item,), daemon=True)
@@ -1703,12 +1713,14 @@ class App:
             i += 1
 
     # -- single item run ---------------------------------------------------
-    def _run_one(self, item, out, fk):
-        # Apply category subfolder
+    def _run_download_only(self, item, out, fk):
+        """Phase 1: yt-dlp download only. Transcode deferred to _postprocess."""
         if self.cfg.get("categorize", False):
             cat = categorize(item.name)
             out = str(Path(out) / cat)
             Path(out).mkdir(parents=True, exist_ok=True)
+        # Stash out dir on item for postprocess phase
+        item._out_dir = out
 
         url = item.url
         ul = url.lower()
@@ -1721,14 +1733,29 @@ class App:
         mode = self.mode_var.get().split(":")[0].strip()
         kind = classify(url) if mode=="auto" else mode
 
+        # Mark this as download-only phase (skip transcode inside _run_video)
+        item._skip_transcode = True
         try:
             if kind=="file": self._run_file(url, out, item)
             else:            self._run_video(url, out, fk, item)
-        except Exception as e:
-            self.log(f"[error] {e}")
-            item.status="error"
-            self._mq.put(("item_up", item))
+        finally:
+            item._skip_transcode = False
 
+    def _postprocess(self, item, fk):
+        """Phase 2: rename + transcode + cleanup. Runs OUTSIDE semaphore so
+        next download can start immediately."""
+        if not item.done_f: return
+        # Mark transcoding status visually
+        item.status = "downloading"  # keep as active to show progress
+        self._mq.put(("item_up", item))
+        # Rename UUID/manifest filenames to descriptive (already partially done)
+        self._rename_if_uuid(item, item.url)
+        # Transcode if needed (pp_compat formats)
+        if self.ff and FMTS.get(fk,{}).get("pp_compat"):
+            self._force_h264_if_needed(item)
+        # Cleanup intermediate format files
+        self._cleanup_intermediates(item)
+        # Mark done
         if not self._stop.is_set() and item.status not in ("error","paused","cancelled"):
             item.status="done"; item.pct=100
             self._mq.put(("item_up", item))
@@ -1917,13 +1944,13 @@ class App:
                     item.status = "error"
                     self._mq.put(("item_up", item))
                     return
+            # Skip rename + transcode if running in download-only phase.
+            # _postprocess will handle them outside semaphore.
+            if getattr(item, "_skip_transcode", False):
+                return
             if item.done_f: self._rename_if_uuid(item, url)
-            # Force H.264 transcode for HLS sources when pp_compat selected.
-            # FFmpegVideoConvertor skips if input already .mp4, even if codec is
-            # not H.264. Explicit ffmpeg pass guarantees avc1 output for editors.
             if self.ff and item.done_f and FMTS.get(fk,{}).get("pp_compat"):
                 self._force_h264_if_needed(item)
-            # Always clean intermediate format-id files (yt-dlp keepvideo not always honored)
             if item.done_f:
                 self._cleanup_intermediates(item)
             if not self._stop.is_set():
