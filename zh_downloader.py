@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "5.5.4"
+APP_VER     = "5.5.5"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -2011,6 +2011,60 @@ class App:
         except Exception as e:
             self.log(f"[warn] cleanup failed: {e}")
 
+    def _pick_hw_encoder(self):
+        """Pick fastest available H.264 encoder. Returns (codec_name, args_list).
+        Cached to avoid repeated ffmpeg probes."""
+        if hasattr(self, "_hw_enc_cache"):
+            return self._hw_enc_cache
+        # Probe available encoders via ffmpeg -encoders
+        encoders_out = ""
+        try:
+            r = subprocess.run([self.ff, "-hide_banner", "-encoders"],
+                               capture_output=True, text=True, timeout=10)
+            encoders_out = (r.stdout or "") + (r.stderr or "")
+        except Exception: pass
+
+        # Quality-first hardware encoder preference
+        candidates = []
+        if platform.system() == "Darwin":
+            # Apple VideoToolbox — Apple Silicon hardware encoder
+            candidates.append(("h264_videotoolbox", [
+                "-profile:v","high","-level","5.1",
+                "-b:v","20M","-maxrate","30M","-bufsize","40M",
+                "-allow_sw","1",  # fallback to software if HW busy
+                "-realtime","0",  # quality over speed
+            ]))
+        elif platform.system() == "Windows":
+            # NVIDIA NVENC first (best)
+            candidates.append(("h264_nvenc", [
+                "-profile:v","high","-level","5.1",
+                "-preset","p5","-tune","hq","-rc","vbr",
+                "-cq","19","-b:v","20M","-maxrate","30M",
+            ]))
+            # Intel QSV
+            candidates.append(("h264_qsv", [
+                "-profile:v","high","-level","5.1",
+                "-preset","slow","-global_quality","19","-look_ahead","1",
+            ]))
+            # AMD AMF
+            candidates.append(("h264_amf", [
+                "-profile:v","high","-level","5.1",
+                "-quality","quality","-rc","cqp","-qp_i","19","-qp_p","19",
+            ]))
+        # Software fallback (always available)
+        candidates.append(("libx264", [
+            "-profile:v","high","-level","5.1",
+            "-preset","fast","-crf","18",
+        ]))
+
+        for codec, args in candidates:
+            if codec in encoders_out:
+                self._hw_enc_cache = (codec, args)
+                return self._hw_enc_cache
+        # Shouldn't happen — libx264 always present
+        self._hw_enc_cache = ("libx264", ["-preset","fast","-crf","18"])
+        return self._hw_enc_cache
+
     def _force_h264_if_needed(self, item):
         """Smart: fast remux if already H.264+AAC, else full re-encode.
         Most YouTube/Artgrid files are already h264 → 5s remux vs minutes transcode."""
@@ -2031,10 +2085,14 @@ class App:
                 self._fast_remux(item, p, duration)
                 return
 
-            self.log(f"[transcode] {p.name}: {vcodec}/{acodec} → H.264+AAC ({duration:.0f}s)...")
+            # Hardware encoder = 5-10x faster than software libx264.
+            # macOS: VideoToolbox (Apple Silicon hw accel)
+            # Windows: NVENC (NVIDIA) > QSV (Intel) > AMF (AMD) > libx264
+            hw_encoder, hw_args = self._pick_hw_encoder()
+            self.log(f"[transcode] {p.name}: {vcodec}/{acodec} → H.264 via {hw_encoder} ({duration:.0f}s)...")
             item.pct = 0
             item.status = "downloading"
-            self._mq.put(("status", f"[{item.idx}/{item.total}] Transcoding to H.264..."))
+            self._mq.put(("status", f"[{item.idx}/{item.total}] Transcoding ({hw_encoder})..."))
             self._mq.put(("item_up", item))
 
             tmp = p.parent / (p.stem + ".h264_tmp.mp4")
@@ -2043,13 +2101,14 @@ class App:
                    "-fflags","+genpts+igndts",
                    "-i", str(p),
                    "-map","0:v:0?","-map","0:a:0?",
-                   # Video — H.264 high profile, fast preset (high quality, 3-4x faster than slow)
-                   "-c:v","libx264","-profile:v","high","-level","5.1",
-                   "-preset","fast","-crf","18","-pix_fmt","yuv420p",
-                   # Audio — AAC stereo 48kHz, async filter to fix drift
+                   # Video encoder (hardware if available, fallback libx264)
+                   "-c:v", hw_encoder,
+                   *hw_args,
+                   "-pix_fmt","yuv420p",
+                   # Audio
                    "-c:a","aac","-b:a","320k","-ar","48000","-ac","2",
                    "-af","aresample=async=1000:min_hard_comp=0.100:first_pts=0",
-                   # A/V sync — VFR passthrough, fix HLS negative timestamps
+                   # A/V sync
                    "-fps_mode","vfr",
                    "-avoid_negative_ts","make_zero",
                    # Container
