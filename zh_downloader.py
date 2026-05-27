@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.0.2"
+APP_VER     = "6.0.3"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -135,6 +135,10 @@ def jload(p, d):
 def jsave(p, d):
     try: Path(p).write_text(json.dumps(d, indent=2))
     except: pass
+
+# Hide ffmpeg subprocess console window on Windows
+# (CREATE_NO_WINDOW = 0x08000000, applied to creationflags)
+_SUBPROCESS_HIDE = {"creationflags": 0x08000000} if platform.system() == "Windows" else {}
 
 def find_ff():
     """Locate ffmpeg binary. Bundled first (PyInstaller), then PATH,
@@ -2003,7 +2007,7 @@ class App:
             if not ffprobe: return None
             r = subprocess.run([ffprobe, "-v","error","-show_entries","format=duration",
                                 "-of","default=noprint_wrappers=1:nokey=1", str(path)],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, timeout=10, **_SUBPROCESS_HIDE)
             return float((r.stdout or "0").strip() or 0) or None
         except Exception: return None
 
@@ -2015,7 +2019,7 @@ class App:
             r = subprocess.run([ffprobe, "-v","error",
                                 "-show_entries","stream=codec_name,codec_type,pix_fmt",
                                 "-of","default=noprint_wrappers=1", str(path)],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, timeout=10, **_SUBPROCESS_HIDE)
             out = (r.stdout or "").lower()
             vcodec, acodec, pix = "", "", ""
             blocks = out.split("codec_type=")
@@ -2064,7 +2068,7 @@ class App:
         encoders_out = ""
         try:
             r = subprocess.run([self.ff, "-hide_banner", "-encoders"],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, text=True, timeout=10, **_SUBPROCESS_HIDE)
             encoders_out = (r.stdout or "") + (r.stderr or "")
         except Exception: pass
 
@@ -2162,7 +2166,8 @@ class App:
 
             # Stream ffmpeg progress (writes to stderr with -progress pipe:2)
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1)
+                                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                                    **_SUBPROCESS_HIDE)
             last_pct = -1
             t0 = time.time()
             tail = []
@@ -2238,7 +2243,8 @@ class App:
                    "-movflags","+faststart","-tag:v","avc1",
                    str(tmp)]
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1)
+                                    stderr=subprocess.PIPE, text=True, bufsize=1,
+                                    **_SUBPROCESS_HIDE)
             last_pct = -1
             tail = []
             for line in proc.stderr:
