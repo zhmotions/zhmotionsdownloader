@@ -15,7 +15,7 @@
   const isVideoSite = VIDEO_HOSTS.some(h => location.hostname.includes(h));
 
   // ── shared state ──────────────────────────────────────────────────────
-  const S = { items: [], btn: null, win: null, winVisible: false };
+  const S = { items: [], btn: null, win: null, winVisible: false, dismissed: false };
 
   // ── CSS ───────────────────────────────────────────────────────────────
   const style = document.createElement('style');
@@ -52,6 +52,19 @@
       font-size: 13px !important; font-weight: 600 !important;
       color: #ff8c42 !important; white-space: nowrap !important;
       user-select: none !important;
+    }
+    #__zhbtn .close {
+      pointer-events: auto !important;
+      display: inline-flex !important; align-items: center !important; justify-content: center !important;
+      width: 20px !important; height: 20px !important;
+      margin-left: 6px !important;
+      background: rgba(255,255,255,0.1) !important;
+      color: #ff8c42 !important; font-size: 16px !important; font-weight: 700 !important;
+      border-radius: 50% !important; cursor: pointer !important;
+      user-select: none !important; line-height: 1 !important;
+    }
+    #__zhbtn .close:hover {
+      background: rgba(235,87,87,0.9) !important; color: #fff !important;
     }
 
     #__zhwin {
@@ -413,15 +426,30 @@
   // ── Floating button ───────────────────────────────────────────────────
   function buildBtn() {
     if (S.btn) return;
+    // Respect user-dismissed state (cleared on tab close)
+    if (S.dismissed) return;
     var btn = document.createElement('div');
     btn.id = '__zhbtn';
     btn.innerHTML =
       '<div class="wrap">' +
         '<img class="icon" src="' + iconUrl('icon48.png') + '" alt="">' +
         '<span class="lbl">Download</span>' +
+        '<span class="close" title="Hide on this tab">×</span>' +
       '</div>';
     document.body.appendChild(btn);
     S.btn = btn;
+
+    // Close button → dismiss for this tab
+    var closeEl = btn.querySelector('.close');
+    if (closeEl) {
+      closeEl.addEventListener('click', function(e) {
+        e.stopPropagation(); e.preventDefault();
+        S.dismissed = true;
+        btn.remove();
+        S.btn = null;
+      });
+      closeEl.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+    }
 
     // Drag + click
     var dragging = false, moved = false;
@@ -468,14 +496,13 @@
     else document.addEventListener('DOMContentLoaded', buildBtn);
   }
 
-  // Watchdog: re-add button every 2s if missing from DOM
-  // Handles SPA navigation (YouTube/Instagram/TikTok) that wipes injected elements
+  // Watchdog: re-add button every 2s if missing from DOM.
+  // Respects S.dismissed → user closed it, don't re-create until tab reload.
   function ensureBtnAlive() {
     if (!isVideoSite) return;
+    if (S.dismissed) return;
     // On YouTube, only on watch pages
     if (location.hostname.includes('youtube.com') && location.pathname !== '/watch') {
-      // Remove button on non-watch YouTube pages
-      if (S.btn && !document.getElementById('__zhbtn')) S.btn = null;
       var existing = document.getElementById('__zhbtn');
       if (existing) existing.remove();
       S.btn = null;
@@ -551,11 +578,17 @@
   });
 
   // ── Download link intercept ───────────────────────────────────────────
+  // ONLY intercept explicit <a download> links — not all file URLs.
+  // Disabled entirely when S.dismissed (user closed floating button).
+  // This prevents extension from hijacking normal browser navigation.
   document.addEventListener('click', function(e) {
+    if (S.dismissed) return;
     var el = e.target;
     while (el && el !== document) {
       if (el.tagName === 'A' && el.href) {
-        if (el.hasAttribute('download') || FILE_EXT.test(el.href)) {
+        // Only intercept links with explicit 'download' attribute.
+        // Browsing to .pdf/.zip URL should NOT be hijacked.
+        if (el.hasAttribute('download')) {
           e.preventDefault();
           e.stopPropagation();
           addItem({ url:el.href, type:'FILE', name:shortUrl(el.href),
