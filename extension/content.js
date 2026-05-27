@@ -591,11 +591,14 @@
         if (el.hasAttribute('download')) {
           e.preventDefault();
           e.stopPropagation();
-          addItem({ url:el.href, type:'FILE', name:shortUrl(el.href),
-                    size:'', referer:location.href, pct:0, status:'Ready' });
-          initBtn();
-          showWin();
-          toast('Click Download in the panel to start');
+          // Direct send to app — no popup panel
+          chrome.runtime.sendMessage(
+            { type: 'ZH_SEND_TO_APP', url: el.href, referer: location.href },
+            function(res) {
+              if (res && res.ok) toast('Sent to ZH Downloader!');
+              else toast('Open ZH Downloader app first!', 'err');
+            }
+          );
           return;
         }
       }

@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.1.1"
+APP_VER     = "6.1.2"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1468,10 +1468,9 @@ class App:
         self.root.after(80, self._poll)
 
     def _recv_ext(self, payload):
+        """Background receive — no window jump, no bell."""
         url, referer = payload if isinstance(payload, tuple) else (payload, "")
         if referer: self._referers[url] = referer
-        try: self.root.deiconify(); self.root.lift()
-        except: pass
         self.log(f"[bridge] {url[:80]}")
         if self._is_running():
             cur = self.url_box.get("1.0","end").strip()
@@ -1483,8 +1482,6 @@ class App:
             self.url_box.delete("1.0","end")
             self.url_box.insert("1.0", url)
             self.root.update_idletasks()
-            try: self.root.bell()
-            except: pass
             self._start()
 
     # -- resume -------------------------------------------------------------
