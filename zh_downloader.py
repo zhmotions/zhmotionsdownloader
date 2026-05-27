@@ -13,6 +13,11 @@ from concurrent.futures import ThreadPoolExecutor
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# Auto-update: prefer newer yt-dlp wheel cached in user dir over bundled
+_YTDLP_USER_CACHE = Path.home() / ".zhdownloader-ytdlp"
+if (_YTDLP_USER_CACHE / "yt_dlp").exists():
+    sys.path.insert(0, str(_YTDLP_USER_CACHE))
+
 try:
     import yt_dlp
 except ImportError:
@@ -42,7 +47,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.1.2"
+APP_VER     = "6.2.0"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -2732,26 +2737,64 @@ class App:
                    command=d.destroy).pack(side="right")
 
     def _check_for_updates_async(self):
-        """Background thread: check GitHub Releases for newer version."""
-        def worker():
-            try:
-                req = urllib.request.Request(
-                    "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest",
-                    headers={"Accept": "application/vnd.github+json",
-                             "User-Agent": f"ZHDownloader/{APP_VER}"})
-                with urllib.request.urlopen(req, timeout=10) as r:
-                    data = json.loads(r.read())
-                latest = (data.get("tag_name","") or "").lstrip("v").strip()
-                if not latest: return
-                # Compare semver naive
-                def parse(v): return tuple(int(x) for x in v.split(".") if x.isdigit())
-                if parse(latest) <= parse(APP_VER): return
-                html_url = data.get("html_url", "https://github.com/zhmotions/zhmotionsdownloader/releases/latest")
-                # Show on main thread
-                self.root.after(0, lambda: self._show_update_prompt(latest, html_url))
-            except Exception:
-                pass  # silent — no internet, GH down, etc
-        threading.Thread(target=worker, daemon=True).start()
+        """Background: check app + yt-dlp updates."""
+        threading.Thread(target=self._update_app_check, daemon=True).start()
+        threading.Thread(target=self._update_ytdlp_silent, daemon=True).start()
+
+    def _update_app_check(self):
+        """Check ZH Downloader new release on GitHub."""
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest",
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": f"ZHDownloader/{APP_VER}"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            latest = (data.get("tag_name","") or "").lstrip("v").strip()
+            if not latest: return
+            def parse(v): return tuple(int(x) for x in v.split(".") if x.isdigit())
+            if parse(latest) <= parse(APP_VER): return
+            html_url = data.get("html_url", "https://github.com/zhmotions/zhmotionsdownloader/releases/latest")
+            self.root.after(0, lambda: self._show_update_prompt(latest, html_url))
+        except Exception: pass
+
+    def _update_ytdlp_silent(self):
+        """Auto-download latest yt-dlp wheel → cache to user dir.
+        Picked up on NEXT app launch via sys.path prepend.
+        Silent — no UI prompts."""
+        try:
+            cache = _YTDLP_USER_CACHE
+            current_ver = getattr(yt_dlp.version, "__version__", "0")
+            # Query PyPI for latest
+            req = urllib.request.Request("https://pypi.org/pypi/yt-dlp/json",
+                headers={"User-Agent": f"ZHDownloader/{APP_VER}"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            latest_ver = data.get("info",{}).get("version","")
+            if not latest_ver or latest_ver == current_ver: return
+            # Find wheel URL
+            wheel_url = None
+            for f in data.get("urls", []):
+                if f.get("packagetype") == "bdist_wheel" and "py3-none-any" in f.get("filename",""):
+                    wheel_url = f["url"]; break
+            if not wheel_url: return
+            self.log(f"[update] yt-dlp {current_ver} → {latest_ver} (background)")
+            # Download wheel
+            tmp = cache.parent / f".ytdlp-{latest_ver}.whl"
+            with urllib.request.urlopen(wheel_url, timeout=60) as r, open(tmp, "wb") as f:
+                shutil.copyfileobj(r, f)
+            # Extract wheel (.whl is zip) to cache dir
+            import zipfile
+            cache.mkdir(parents=True, exist_ok=True)
+            # Clear old contents
+            for child in cache.iterdir():
+                if child.is_dir(): shutil.rmtree(child, ignore_errors=True)
+                else: child.unlink(missing_ok=True)
+            with zipfile.ZipFile(tmp) as z: z.extractall(cache)
+            tmp.unlink(missing_ok=True)
+            self.log(f"[update] yt-dlp {latest_ver} cached — restart app to activate")
+        except Exception as e:
+            print(f"[ytdlp-update] {e}", file=sys.stderr)
 
     def _show_update_prompt(self, new_ver, url):
         """Modal asking user to update. Only one per session."""

@@ -91,7 +91,7 @@ jobs:
           $env:Path = "$WIX;$env:Path"
           candle.exe -nologo -arch x64 `
             -dAppName="ZH Downloader" `
-            -dAppVersion="6.1.2" `
+            -dAppVersion="6.2.0" `
             -dAppAuthor="ZH Motions" `
             -dExePath="dist\ZHDownloader.exe" `
             -dIconPath="assets\AppIcon.ico" `
@@ -194,10 +194,11 @@ jobs:
           # Copy real EULA into installer resources for license screen
           RES_DIR=$(mktemp -d)
           cp student-pack/LICENSE-STUDENT.txt "$RES_DIR/License.txt"
+          ls -la "$RES_DIR"
           pkgbuild \
             --root "$PKG_ROOT" \
             --identifier "com.zhmotions.downloader" \
-            --version "6.1.2" \
+            --version "6.2.0" \
             --install-location "/" \
             "$COMP_DIR/component.pkg"
           cat > "$COMP_DIR/dist.xml" << 'DISTEOF'
@@ -210,14 +211,14 @@ jobs:
             <choices-outline><line choice="default"><line choice="com.zhmotions.downloader"/></line></choices-outline>
             <choice id="default"/>
             <choice id="com.zhmotions.downloader" visible="false"><pkg-ref id="com.zhmotions.downloader"/></choice>
-            <pkg-ref id="com.zhmotions.downloader" version="6.1.2" onConclusion="none">component.pkg</pkg-ref>
+            <pkg-ref id="com.zhmotions.downloader" version="6.2.0" onConclusion="none">component.pkg</pkg-ref>
           </installer-gui-script>
           DISTEOF
           productbuild \
             --distribution "$COMP_DIR/dist.xml" \
             --package-path "$COMP_DIR" \
             --resources "$RES_DIR" \
-            --version "6.1.2" \
+            --version "6.2.0" \
             "ZHDownloader-macOS.pkg"
 
       - name: Upload DMG
