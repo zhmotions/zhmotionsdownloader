@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.0.0"
+APP_VER     = "6.0.1"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -137,24 +137,28 @@ def jsave(p, d):
     except: pass
 
 def find_ff():
-    """Locate bundled ffmpeg binary. Search PATH, PyInstaller temp,
-    executable dir, common install locations. Required for HD merge."""
-    # 1. System PATH first
-    p = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
-    if p and Path(p).exists(): return p
-
-    # 2. PyInstaller temp dir (_MEIPASS for onefile, app bundle for macOS)
+    """Locate ffmpeg binary. Bundled first (PyInstaller), then PATH,
+    then common install locations. Logs to stderr for debugging."""
     candidates = []
+
+    # 1. PyInstaller bundle (_MEIPASS for onefile)
     if hasattr(sys, "_MEIPASS"):
         meipass = Path(sys._MEIPASS)
         candidates += [meipass/"ffmpeg.exe", meipass/"ffmpeg",
                        meipass/"bin"/"ffmpeg.exe", meipass/"bin"/"ffmpeg"]
 
-    # 3. Executable directory (next to the .exe)
+    # 2. Executable directory (next to .exe / .app)
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).parent
+        # macOS .app: ffmpeg in Contents/MacOS or Contents/Resources
         candidates += [exe_dir/"ffmpeg.exe", exe_dir/"ffmpeg",
-                       exe_dir/"bin"/"ffmpeg.exe"]
+                       exe_dir/"bin"/"ffmpeg.exe", exe_dir/"bin"/"ffmpeg",
+                       exe_dir.parent/"Resources"/"ffmpeg"]
+
+    # 3. PATH (system-installed)
+    p = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+    if p and Path(p).exists():
+        candidates.insert(0, Path(p))  # prefer bundle, but system OK
 
     # 4. Script directory (run from source)
     here = Path(__file__).parent
@@ -167,11 +171,16 @@ def find_ff():
             Path(r"C:\ffmpeg\bin\ffmpeg.exe"),
             Path(r"C:\Program Files\ffmpeg\bin\ffmpeg.exe"),
             Path(r"C:\ProgramData\chocolatey\bin\ffmpeg.exe"),
+            Path.home()/"scoop"/"apps"/"ffmpeg"/"current"/"bin"/"ffmpeg.exe",
         ]
 
     for c in candidates:
-        if c.exists():
-            return str(c)
+        try:
+            if c.exists() and c.is_file():
+                print(f"[find_ff] using: {c}", file=sys.stderr)
+                return str(c)
+        except Exception: pass
+    print(f"[find_ff] NOT FOUND. Searched: {[str(c) for c in candidates]}", file=sys.stderr)
     return None
 
 def res_path():
@@ -1915,24 +1924,32 @@ class App:
         def _try(o):
             with yt_dlp.YoutubeDL(o) as ydl: ydl.download([url])
 
+        def _is_cookie_err(emsg):
+            return any(k in emsg for k in (
+                "cookies", "cookiesfrombrowser", "could not copy chrome",
+                "permission denied", "keyring", "could not find browser",
+                "failed to load cookies", "could not copy cookie database",
+            ))
+
         try:
             try:
                 _try(opts)
             except yt_dlp.utils.DownloadError as e:
                 emsg = str(e).lower()
-                if "user_stop" in emsg:
-                    raise
-                # Cookie-related failures → retry without cookies
-                cookie_err = any(k in emsg for k in (
-                    "cookies", "cookiesfrombrowser", "could not copy chrome",
-                    "permission denied", "keyring", "could not find browser"
-                ))
-                if cookie_err and "cookiesfrombrowser" in opts:
-                    self.log("[warn] cookie read failed — retrying without cookies (HD may need login)")
+                if "user_stop" in emsg: raise
+                if _is_cookie_err(emsg) and "cookiesfrombrowser" in opts:
+                    self.log("[warn] cookie read failed — retrying without cookies")
                     opts2 = dict(opts); opts2.pop("cookiesfrombrowser", None)
                     _try(opts2)
-                else:
-                    raise
+                else: raise
+            except Exception as e:
+                # Catch CookieLoadError + other non-DownloadError cookie failures
+                emsg = str(e).lower()
+                if _is_cookie_err(emsg) and "cookiesfrombrowser" in opts:
+                    self.log("[warn] cookie read failed (Chrome may be running — close it) — retrying without cookies")
+                    opts2 = dict(opts); opts2.pop("cookiesfrombrowser", None)
+                    _try(opts2)
+                else: raise
             # Sanity check: if YouTube returned error response (tiny file), bail loudly
             if item.done_f and Path(item.done_f).exists():
                 fsize = Path(item.done_f).stat().st_size
