@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.0.3"
+APP_VER     = "6.1.0"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -564,6 +564,8 @@ class App:
         self._start_bridge()
         self._check_resume()
         self._setup_tray()
+        # Background update check (10s after startup, once per session)
+        root.after(10000, self._check_for_updates_async)
 
         # Intercept window close to minimize-to-tray (if available)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -2722,6 +2724,42 @@ class App:
                    )).pack(side="left", padx=(0,8))
         ttk.Button(ftr, text="Close", style="Ghost.TButton",
                    command=d.destroy).pack(side="right")
+
+    def _check_for_updates_async(self):
+        """Background thread: check GitHub Releases for newer version."""
+        def worker():
+            try:
+                req = urllib.request.Request(
+                    "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest",
+                    headers={"Accept": "application/vnd.github+json",
+                             "User-Agent": f"ZHDownloader/{APP_VER}"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    data = json.loads(r.read())
+                latest = (data.get("tag_name","") or "").lstrip("v").strip()
+                if not latest: return
+                # Compare semver naive
+                def parse(v): return tuple(int(x) for x in v.split(".") if x.isdigit())
+                if parse(latest) <= parse(APP_VER): return
+                html_url = data.get("html_url", "https://github.com/zhmotions/zhmotionsdownloader/releases/latest")
+                # Show on main thread
+                self.root.after(0, lambda: self._show_update_prompt(latest, html_url))
+            except Exception:
+                pass  # silent — no internet, GH down, etc
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_update_prompt(self, new_ver, url):
+        """Modal asking user to update. Only one per session."""
+        if getattr(self, "_update_prompted", False): return
+        self._update_prompted = True
+        ans = messagebox.askyesno(
+            APP_NAME,
+            f"Update available: v{new_ver}\n"
+            f"You're on v{APP_VER}\n\n"
+            f"Download v{new_ver} now?",
+            icon="info"
+        )
+        if ans:
+            self._open_url(url)
 
     def _open_url(self, url):
         try:
