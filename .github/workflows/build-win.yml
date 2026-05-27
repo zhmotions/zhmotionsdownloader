@@ -27,15 +27,26 @@ jobs:
       - name: Install WiX Toolset
         run: choco install wixtoolset -y --no-progress
 
-      - name: Locate ffmpeg + ffprobe
+      - name: Locate ffmpeg + ffprobe (resolve choco shim)
         id: ffmpeg
         shell: pwsh
         run: |
-          $ff = (Get-Command ffmpeg).Source
-          $fp = (Get-Command ffprobe).Source
+          # Choco installs ffmpeg to ProgramData with shim in bin. Find REAL exe.
+          $real_ff = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg*\tools\ffmpeg\bin\ffmpeg.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          $real_fp = Get-ChildItem 'C:\ProgramData\chocolatey\lib\ffmpeg*\tools\ffmpeg\bin\ffprobe.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $real_ff) {
+            # Fallback: resolve from PATH
+            $real_ff = (Get-Command ffmpeg).Source
+            $real_fp = (Get-Command ffprobe).Source
+          }
+          $ff = $real_ff.ToString()
+          $fp = $real_fp.ToString()
+          # Verify size > 1 MB (shims are tiny)
+          $size = (Get-Item $ff).Length
+          echo "ffmpeg path: $ff ($size bytes)"
+          if ($size -lt 1000000) { throw "ffmpeg is shim — $size bytes. Need real binary." }
           echo "path=$ff" >> $env:GITHUB_OUTPUT
           echo "probe=$fp" >> $env:GITHUB_OUTPUT
-          echo "ffmpeg: $ff"
           echo "ffprobe: $fp"
 
       - name: Install Python deps
@@ -80,7 +91,7 @@ jobs:
           $env:Path = "$WIX;$env:Path"
           candle.exe -nologo -arch x64 `
             -dAppName="ZH Downloader" `
-            -dAppVersion="6.0.1" `
+            -dAppVersion="6.0.2" `
             -dAppAuthor="ZH Motions" `
             -dExePath="dist\ZHDownloader.exe" `
             -dIconPath="assets\AppIcon.ico" `
@@ -183,7 +194,7 @@ jobs:
           pkgbuild \
             --root "$PKG_ROOT" \
             --identifier "com.zhmotions.downloader" \
-            --version "6.0.1" \
+            --version "6.0.2" \
             --install-location "/" \
             "$COMP_DIR/component.pkg"
           cat > "$COMP_DIR/dist.xml" << 'DISTEOF'
@@ -195,13 +206,13 @@ jobs:
             <choices-outline><line choice="default"><line choice="com.zhmotions.downloader"/></line></choices-outline>
             <choice id="default"/>
             <choice id="com.zhmotions.downloader" visible="false"><pkg-ref id="com.zhmotions.downloader"/></choice>
-            <pkg-ref id="com.zhmotions.downloader" version="6.0.1" onConclusion="none">component.pkg</pkg-ref>
+            <pkg-ref id="com.zhmotions.downloader" version="6.0.2" onConclusion="none">component.pkg</pkg-ref>
           </installer-gui-script>
           DISTEOF
           productbuild \
             --distribution "$COMP_DIR/dist.xml" \
             --package-path "$COMP_DIR" \
-            --version "6.0.1" \
+            --version "6.0.2" \
             "ZHDownloader-macOS.pkg"
 
       - name: Upload DMG
