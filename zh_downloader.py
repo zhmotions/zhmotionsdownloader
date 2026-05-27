@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "5.5.2"
+APP_VER     = "5.5.3"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1924,6 +1924,17 @@ class App:
                     _try(opts2)
                 else:
                     raise
+            # Sanity check: if YouTube returned error response (tiny file), bail loudly
+            if item.done_f and Path(item.done_f).exists():
+                fsize = Path(item.done_f).stat().st_size
+                if fsize < 51200:  # <50 KB = error page, not video
+                    self.log(f"[error] download too small ({fsize} bytes) — YouTube blocked or sign-in needed")
+                    self.log(f"[error] try: set Cookies dropdown → chrome + login YouTube in Chrome")
+                    try: Path(item.done_f).unlink()
+                    except: pass
+                    item.status = "error"
+                    self._mq.put(("item_up", item))
+                    return
             if item.done_f: self._rename_if_uuid(item, url)
             # Force H.264 transcode for HLS sources when pp_compat selected.
             # FFmpegVideoConvertor skips if input already .mp4, even if codec is
