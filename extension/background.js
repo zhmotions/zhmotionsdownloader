@@ -33,6 +33,13 @@ chrome.storage.local.get(["intercept","whitelist","blacklist"], r => {
   blacklist = r.blacklist || [];
 });
 
+// React to settings changes from popup
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.intercept) intercept = changes.intercept.newValue !== false;
+  if (changes.whitelist) whitelist = changes.whitelist.newValue || [];
+  if (changes.blacklist) blacklist = changes.blacklist.newValue || [];
+});
+
 // ── Tab state ──────────────────────────────────────────────────────────────
 function getTab(id) {
   if (!tabState.has(id)) tabState.set(id, []);
