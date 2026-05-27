@@ -47,7 +47,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.2.0"
+APP_VER     = "6.3.0"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1477,15 +1477,20 @@ class App:
         url, referer = payload if isinstance(payload, tuple) else (payload, "")
         if referer: self._referers[url] = referer
         self.log(f"[bridge] {url[:80]}")
-        if self._is_running():
+        if self._is_running() and getattr(self, "_sem", None) is not None:
+            # Live-enqueue into running pool so additional URLs actually download
+            if self._enqueue_live(url, referer):
+                self.log("[bridge] Added to live queue")
             cur = self.url_box.get("1.0","end").strip()
             if url not in cur:
-                self.url_box.delete("1.0","end")
-                self.url_box.insert("1.0",(cur+"\n"+url).strip() if cur else url)
-                self.log("[bridge] Added to queue")
+                self.url_box.insert("end", ("\n"+url) if cur else url)
         else:
-            self.url_box.delete("1.0","end")
-            self.url_box.insert("1.0", url)
+            cur = self.url_box.get("1.0","end").strip()
+            if cur and url not in cur:
+                self.url_box.insert("end", "\n"+url)
+            else:
+                self.url_box.delete("1.0","end")
+                self.url_box.insert("1.0", url)
             self.root.update_idletasks()
             self._start()
 
@@ -1564,10 +1569,9 @@ class App:
     def _start(self):
         import datetime
         raw  = self.url_box.get("1.0","end")
-        urls = [u.strip() for u in raw.splitlines()
-                if u.strip() and URL_RE.match(u.strip())
-                and not u.strip().startswith("blob:")
-                and not u.strip().startswith("data:")]
+        # findall handles newline, space, comma, tab separated URLs (browser drag often inlines them)
+        urls = [u for u in URL_RE.findall(raw)
+                if not u.startswith("blob:") and not u.startswith("data:")]
         # De-dupe preserving order
         seen = set(); urls = [u for u in urls if not (u in seen or seen.add(u))]
         # Skip URLs already in history (completed previously)
@@ -1652,55 +1656,77 @@ class App:
         self.cfg["concurrent"] = max_par
         jsave(CFG_PATH, self.cfg)
         self.log(f"[start] queue={len(self._items)} items, concurrent={max_par}")
-        sem = threading.Semaphore(max_par)
+        # Store pool state on self so _recv_ext can live-enqueue mid-run
+        self._sem = threading.Semaphore(max_par)
+        self._out = out
+        self._fk  = fk
         self._workers = []
         self._active_count = 0
         self._active_lock = threading.Lock()
 
-        def runner(item):
-            # Phase 1: DOWNLOAD (semaphore-limited so YouTube/network isn't hammered)
-            with sem:
-                if self._stop.is_set():
-                    item.status = "paused" if self._paused else "cancelled"
-                    self._mq.put(("item_up", item)); return
-                with self._active_lock:
-                    self._active_count += 1
-                    self._mq.put(("concur", (self._active_count, len(self._items))))
-                try:
-                    item.start_t = time.time()
-                    self._run_download_only(item, out, fk)
-                except Exception as e:
-                    self.log(f"[error] {e}")
-                    item.status = "error"
-                    self._mq.put(("item_up", item))
-                with self._active_lock:
-                    self._active_count -= 1
-                    self._mq.put(("concur", (self._active_count, len(self._items))))
-
-            # Phase 2: POSTPROCESS (NO semaphore — next download already started)
-            # Transcode + rename + cleanup happen in this worker but slot freed.
-            if item.status not in ("error","paused","cancelled"):
-                try:
-                    self._postprocess(item, fk)
-                except Exception as e:
-                    self.log(f"[warn] postprocess: {e}")
-            item.end_t = time.time()
-            if item.status == "done":
-                self._mq.put(("hist_add", item))
-                self._mq.put(("stats_add", item))
-            self.state["queue"] = [q for q in self.state.get("queue",[])
-                                    if q.get("url") != item.url]
-            jsave(STATE_PATH, self.state)
-
         for item in self._items:
-            t = threading.Thread(target=runner, args=(item,), daemon=True)
+            t = threading.Thread(target=self._runner, args=(item,), daemon=True)
             self._workers.append(t); t.start()
 
-        # Watcher thread to fire done event when all complete
+        # Watcher polls workers list (includes any live-enqueued late additions)
         def watcher():
-            for t in self._workers: t.join()
+            while True:
+                time.sleep(0.4)
+                if not any(t.is_alive() for t in self._workers):
+                    # Grace period for late _recv_ext additions
+                    time.sleep(0.6)
+                    if not any(t.is_alive() for t in self._workers): break
+            self._sem = None
             self._mq.put(("done", None))
         threading.Thread(target=watcher, daemon=True).start()
+
+    def _runner(self, item):
+        # Phase 1: DOWNLOAD (semaphore-limited so YouTube/network isn't hammered)
+        with self._sem:
+            if self._stop.is_set():
+                item.status = "paused" if self._paused else "cancelled"
+                self._mq.put(("item_up", item)); return
+            with self._active_lock:
+                self._active_count += 1
+                self._mq.put(("concur", (self._active_count, len(self._items))))
+            try:
+                item.start_t = time.time()
+                self._run_download_only(item, self._out, self._fk)
+            except Exception as e:
+                self.log(f"[error] {e}")
+                item.status = "error"
+                self._mq.put(("item_up", item))
+            with self._active_lock:
+                self._active_count -= 1
+                self._mq.put(("concur", (self._active_count, len(self._items))))
+        # Phase 2: POSTPROCESS (slot freed — next download already started)
+        if item.status not in ("error","paused","cancelled"):
+            try: self._postprocess(item, self._fk)
+            except Exception as e: self.log(f"[warn] postprocess: {e}")
+        item.end_t = time.time()
+        if item.status == "done":
+            self._mq.put(("hist_add", item))
+            self._mq.put(("stats_add", item))
+        self.state["queue"] = [q for q in self.state.get("queue",[])
+                                if q.get("url") != item.url]
+        jsave(STATE_PATH, self.state)
+
+    def _enqueue_live(self, url, referer=""):
+        """Add URL to in-flight queue. Spawns worker that uses existing semaphore pool."""
+        if any(it.url == url for it in self._items): return False
+        if referer: self._referers[url] = referer
+        idx = len(self._items) + 1
+        item = DL(url, idx, idx, self._referers.get(url, ""))
+        self._items.append(item)
+        for i, it in enumerate(self._items, 1):
+            it.idx = i; it.total = len(self._items)
+        self._build_rows(self._items)
+        self.state.setdefault("queue", []).append(
+            {"url": url, "dir": self._out, "fmt": self._fk})
+        jsave(STATE_PATH, self.state)
+        t = threading.Thread(target=self._runner, args=(item,), daemon=True)
+        self._workers.append(t); t.start()
+        return True
 
     def _do_pause(self):
         self._paused=True; self._stop.set()
@@ -2534,7 +2560,7 @@ class App:
         except: pass
 
     def _auto_clear(self):
-        self.url_box.delete("1.0","end")
+        # Keep url_box intact so user can re-reference / re-download. Only clear log.
         self.log_txt.configure(state="normal")
         self.log_txt.delete("1.0","end")
         self.log_txt.configure(state="disabled")
