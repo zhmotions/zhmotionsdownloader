@@ -42,7 +42,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.1.0"
+APP_VER     = "6.1.1"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1050,7 +1050,7 @@ class App:
                                     *THEMES.keys(), command=self._on_theme))
 
         # Concurrent downloads
-        self.concur_var = tk.IntVar(value=self.cfg.get("concurrent",2))
+        self.concur_var = tk.IntVar(value=self.cfg.get("concurrent",3))
         self._add_setting(body, 1, "Concurrent downloads (1-5)",
             lambda r: tk.Scale(r, from_=1, to=MAX_CONCURRENT, orient="horizontal",
                                variable=self.concur_var, length=200,
@@ -1639,7 +1639,16 @@ class App:
         jsave(STATE_PATH,self.state)
 
         # Concurrent worker pool — default 3 for visible parallelism
-        max_par = max(1, min(MAX_CONCURRENT, int(self.cfg.get("concurrent",3))))
+        # Get concurrent from UI slider if exists, else cfg, default 3
+        cfg_val = 3
+        if hasattr(self, "concur_var"):
+            try: cfg_val = int(self.concur_var.get())
+            except Exception: pass
+        else:
+            cfg_val = int(self.cfg.get("concurrent", 3))
+        max_par = max(1, min(MAX_CONCURRENT, cfg_val))
+        self.cfg["concurrent"] = max_par
+        jsave(CFG_PATH, self.cfg)
         self.log(f"[start] queue={len(self._items)} items, concurrent={max_par}")
         sem = threading.Semaphore(max_par)
         self._workers = []
