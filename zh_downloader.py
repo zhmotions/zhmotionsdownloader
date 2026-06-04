@@ -47,7 +47,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.3.2"
+APP_VER     = "6.3.3"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -530,6 +530,7 @@ class App:
             "dir":DEFAULT_DIR, "fmt":"4k", "cookies":default_cookies, "clip":True,
             "theme":"Light", "concurrent":3, "rate_kbps":0, "categorize":False,
             "completion_sound":True, "shutdown_after":False, "conflict":"rename",
+            "autostart":True,
         })
         # Apply theme
         self.set_theme(self.cfg.get("theme","Light"), refresh=False)
@@ -571,6 +572,9 @@ class App:
         self._setup_tray()
         # Background update check (10s after startup, once per session)
         root.after(10000, self._check_for_updates_async)
+        # Apply autostart preference (idempotent — won't duplicate entry)
+        if self.cfg.get("autostart", True):
+            root.after(3000, lambda: self._apply_autostart(True))
 
         # Intercept window close to minimize-to-tray (if available)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1096,6 +1100,13 @@ class App:
             lambda r: tk.OptionMenu(r, self.conf_var, "rename","overwrite","skip","ask",
                                     command=lambda v: self._save_setting("conflict", v)))
 
+        # Auto-launch on system startup
+        self.auto_var = tk.BooleanVar(value=self.cfg.get("autostart", True))
+        self._add_setting(body, 7, "Launch automatically when computer starts",
+            lambda r: ttk.Checkbutton(r, variable=self.auto_var,
+                command=lambda: (self._save_setting("autostart", self.auto_var.get()),
+                                 self._apply_autostart(self.auto_var.get()))))
+
         # Footer
         ftr = tk.Frame(tab, bg=T["BG"]); ftr.pack(fill="x", padx=14, pady=(18,14))
         tk.Frame(ftr, bg=T["BORDER"], height=1).pack(fill="x", pady=(0,10))
@@ -1117,6 +1128,64 @@ class App:
         if isinstance(widget, tk.OptionMenu):
             self._style_menu(widget); widget.configure(width=14)
         return widget
+
+    def _apply_autostart(self, enable):
+        """Add/remove app from OS startup. macOS: Login Items via osascript.
+        Windows: registry HKCU Run key."""
+        try:
+            sys_name = platform.system()
+            if sys_name == "Darwin":
+                # Resolve app path. For .app bundle use the bundle root; for source skip.
+                app_path = "/Applications/ZH Downloader.app"
+                if not Path(app_path).exists():
+                    # Try Applications elsewhere or skip
+                    self.log("[autostart] app not in /Applications — skip (run from .pkg install)")
+                    return
+                name = "ZH Downloader"
+                if enable:
+                    script = (f'tell application "System Events" to '
+                              f'make login item at end with properties '
+                              f'{{name:"{name}", path:"{app_path}", hidden:false}}')
+                    subprocess.run(["osascript", "-e",
+                                    f'tell application "System Events" to '
+                                    f'if not (exists login item "{name}") then '
+                                    f'{script}'],
+                                   capture_output=True, timeout=10)
+                    self.log("[autostart] enabled — app will launch on login")
+                else:
+                    subprocess.run(["osascript", "-e",
+                                    f'tell application "System Events" to delete login item "{name}"'],
+                                   capture_output=True, timeout=10)
+                    self.log("[autostart] disabled")
+
+            elif sys_name == "Windows":
+                # Registry HKCU\Software\Microsoft\Windows\CurrentVersion\Run
+                exe = sys.executable
+                if not getattr(sys, "frozen", False):
+                    self.log("[autostart] not running from .exe bundle — skip")
+                    return
+                try:
+                    import winreg
+                except ImportError:
+                    self.log("[autostart] winreg unavailable")
+                    return
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                    r"Software\Microsoft\Windows\CurrentVersion\Run",
+                    0, winreg.KEY_SET_VALUE | winreg.KEY_QUERY_VALUE)
+                try:
+                    if enable:
+                        winreg.SetValueEx(key, "ZHDownloader", 0, winreg.REG_SZ, f'"{exe}"')
+                        self.log("[autostart] enabled (registry Run key)")
+                    else:
+                        try: winreg.DeleteValue(key, "ZHDownloader")
+                        except FileNotFoundError: pass
+                        self.log("[autostart] disabled")
+                finally:
+                    winreg.CloseKey(key)
+            else:
+                self.log("[autostart] platform not supported")
+        except Exception as e:
+            self.log(f"[warn] autostart toggle failed: {e}")
 
     def _save_setting(self, key, val):
         self.cfg[key] = val
