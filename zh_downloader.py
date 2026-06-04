@@ -47,7 +47,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.3.1"
+APP_VER     = "6.3.2"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -2768,7 +2768,7 @@ class App:
         threading.Thread(target=self._update_ytdlp_silent, daemon=True).start()
 
     def _update_app_check(self):
-        """Check ZH Downloader new release on GitHub."""
+        """Check ZH Downloader new release on GitHub. Logs results so user sees status."""
         try:
             req = urllib.request.Request(
                 "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest",
@@ -2777,12 +2777,18 @@ class App:
             with urllib.request.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             latest = (data.get("tag_name","") or "").lstrip("v").strip()
-            if not latest: return
+            if not latest:
+                self.log("[update] could not read latest release tag")
+                return
             def parse(v): return tuple(int(x) for x in v.split(".") if x.isdigit())
-            if parse(latest) <= parse(APP_VER): return
+            if parse(latest) <= parse(APP_VER):
+                self.log(f"[update] current v{APP_VER} is latest (server: v{latest})")
+                return
             html_url = data.get("html_url", "https://github.com/zhmotions/zhmotionsdownloader/releases/latest")
+            self.log(f"[update] NEW VERSION available: v{latest} (you have v{APP_VER})")
             self.root.after(0, lambda: self._show_update_prompt(latest, html_url))
-        except Exception: pass
+        except Exception as e:
+            self.log(f"[update] check failed: {e}")
 
     def _update_ytdlp_silent(self):
         """Auto-download latest yt-dlp wheel → cache to user dir.
