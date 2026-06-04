@@ -21,50 +21,64 @@
   const style = document.createElement('style');
   style.id = '__zh_style';
   style.textContent = `
+    /* IDM-style compact circle. Fixed 52x52 px. Icon only. No stretch. */
     #__zhbtn {
       all: initial;
       position: fixed !important;
       bottom: 80px !important;
       right: 20px !important;
+      width: 52px !important;
+      height: 52px !important;
       z-index: 2147483647 !important;
-      cursor: pointer !important;
+      cursor: grab !important;
       font-family: -apple-system, sans-serif !important;
     }
+    #__zhbtn:active { cursor: grabbing !important; }
     #__zhbtn .wrap {
       display: flex !important;
       align-items: center !important;
-      gap: 8px !important;
+      justify-content: center !important;
+      width: 52px !important;
+      height: 52px !important;
+      box-sizing: border-box !important;
       background: #1c0800 !important;
-      border: 1.5px solid #ff6b35 !important;
-      border-radius: 50px !important;
-      padding: 8px 14px 8px 10px !important;
-      box-shadow: 0 4px 20px rgba(255,80,20,.45) !important;
+      border: 2px solid #ff6b35 !important;
+      border-radius: 50% !important;
+      box-shadow: 0 4px 18px rgba(255,80,20,.55) !important;
+      transition: transform 0.15s ease, box-shadow 0.15s ease !important;
       pointer-events: none !important;
     }
     #__zhbtn:hover .wrap {
-      box-shadow: 0 6px 28px rgba(255,80,20,.65) !important;
+      transform: scale(1.08) !important;
+      box-shadow: 0 6px 24px rgba(255,80,20,.75) !important;
     }
     #__zhbtn .icon {
-      width: 24px !important; height: 24px !important;
-      border-radius: 6px !important; flex-shrink: 0 !important;
+      width: 28px !important; height: 28px !important;
+      border-radius: 6px !important;
+      pointer-events: none !important;
     }
-    #__zhbtn .lbl {
-      font-size: 13px !important; font-weight: 600 !important;
-      color: #ff8c42 !important; white-space: nowrap !important;
-      user-select: none !important;
-    }
+    /* Label hidden — IDM style is icon-only circle */
+    #__zhbtn .lbl { display: none !important; }
+    /* Close × in top-right corner of circle */
     #__zhbtn .close {
       pointer-events: auto !important;
-      display: inline-flex !important; align-items: center !important; justify-content: center !important;
-      width: 20px !important; height: 20px !important;
-      margin-left: 6px !important;
-      background: rgba(255,255,255,0.1) !important;
-      color: #ff8c42 !important; font-size: 16px !important; font-weight: 700 !important;
-      border-radius: 50% !important; cursor: pointer !important;
+      position: absolute !important;
+      top: -4px !important; right: -4px !important;
+      display: flex !important; align-items: center !important; justify-content: center !important;
+      width: 18px !important; height: 18px !important;
+      background: #2a0e00 !important;
+      color: #ff8c42 !important;
+      font-size: 12px !important; font-weight: 700 !important;
+      border-radius: 50% !important;
+      border: 1.5px solid #ff6b35 !important;
+      cursor: pointer !important;
       user-select: none !important; line-height: 1 !important;
+      opacity: 0 !important;
+      transition: opacity 0.15s ease !important;
     }
+    #__zhbtn:hover .close { opacity: 1 !important; }
     #__zhbtn .close:hover {
-      background: rgba(235,87,87,0.9) !important; color: #fff !important;
+      background: #eb5757 !important; color: #fff !important; border-color: #eb5757 !important;
     }
 
     #__zhwin {
