@@ -22,13 +22,13 @@ const VIDEO_HOSTS = [
 ];
 
 const tabState  = new Map();
-let   intercept = false;  // global intercept toggle (OFF by default — user opt-in via popup)
+let   intercept = true;   // global intercept toggle (ON by default — safer narrow scope in content.js)
 let   whitelist = [];     // sites where ZH is disabled
 let   blacklist = [];     // sites where ZH is always active
 
 // ── Storage: load settings ─────────────────────────────────────────────────
 chrome.storage.local.get(["intercept","whitelist","blacklist"], r => {
-  intercept = r.intercept === true;  // default OFF (opt-in)
+  intercept = r.intercept !== false;  // default ON (user can disable in popup)
   whitelist = r.whitelist || [];
   blacklist = r.blacklist || [];
 });
