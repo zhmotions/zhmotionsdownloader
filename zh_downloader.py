@@ -47,7 +47,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.3.5"
+APP_VER     = "6.3.6"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -2842,20 +2842,25 @@ class App:
         Custom server expected to host JSON at:
           https://www.zhmotions.com/zhdownloader/version.json
         Format:
-          {"version": "6.3.5", "download_url": "https://.../ZHDownloader.zip",
+          {"version": "6.3.6", "download_url": "https://.../ZHDownloader.zip",
            "notes": "release notes here"}
         """
         sources = [
-            ("zhmotions.com", "https://www.zhmotions.com/zhdownloader/version.json", self._parse_zhm_json),
-            ("github",        "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest", self._parse_gh_json),
+            ("shop-html", "https://zhmotions.com/shop?p=3", self._parse_zhm_shop_html, "text/html"),
+            ("zhm-json",  "https://www.zhmotions.com/zhdownloader/version.json", self._parse_zhm_json, "application/json"),
+            ("github",    "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest", self._parse_gh_json, "application/json"),
         ]
-        for name, url, parser in sources:
+        for name, url, parser, accept in sources:
             try:
                 req = urllib.request.Request(url, headers={
-                    "Accept": "application/json",
+                    "Accept": accept,
                     "User-Agent": f"ZHDownloader/{APP_VER}"})
                 with urllib.request.urlopen(req, timeout=10) as r:
-                    data = json.loads(r.read())
+                    body = r.read()
+                if accept.startswith("application/json"):
+                    data = json.loads(body)
+                else:
+                    data = body.decode("utf-8", "ignore")
                 latest, html_url, notes = parser(data)
                 if not latest:
                     self.log(f"[update] {name}: empty version field")
@@ -2871,6 +2876,36 @@ class App:
                 self.log(f"[update] {name} check failed: {e}")
         # All sources failed
         self.log("[update] all sources unreachable")
+
+    def _parse_zhm_shop_html(self, html):
+        """Scrape product page HTML for version + download URL.
+
+        Looks for these markers (in priority order):
+        1. <meta name="zhd-version" content="6.3.6">
+        2. <meta name="zhd-download" content="https://...zip">
+        3. data-zhd-version="6.3.6" attribute on any tag
+        4. Free text pattern like 'Version 6.3.6' or 'v6.3.6'
+        5. First <a href> ending in .zip / .pkg / .msi as download URL
+        """
+        import re as _re
+        # Version detection
+        version = ""
+        m = _re.search(r'<meta\s+name="zhd-version"\s+content="([^"]+)"', html, _re.I)
+        if m: version = m.group(1).strip().lstrip("v")
+        if not version:
+            m = _re.search(r'data-zhd-version=["\']([^"\']+)', html, _re.I)
+            if m: version = m.group(1).strip().lstrip("v")
+        if not version:
+            m = _re.search(r'(?:version\s*[:\s]+|v)(\d+\.\d+\.\d+)', html, _re.I)
+            if m: version = m.group(1)
+        # Download URL detection
+        download = ""
+        m = _re.search(r'<meta\s+name="zhd-download"\s+content="([^"]+)"', html, _re.I)
+        if m: download = m.group(1).strip()
+        if not download:
+            m = _re.search(r'href="([^"]+\.(zip|pkg|msi|exe|dmg))"', html, _re.I)
+            if m: download = m.group(1).strip()
+        return (version, download or "https://zhmotions.com/shop?p=3", "")
 
     def _parse_zhm_json(self, data):
         return (
