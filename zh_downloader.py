@@ -47,7 +47,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.3.4"
+APP_VER     = "6.3.5"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -2837,27 +2837,54 @@ class App:
         threading.Thread(target=self._update_ytdlp_silent, daemon=True).start()
 
     def _update_app_check(self):
-        """Check ZH Downloader new release on GitHub. Logs results so user sees status."""
-        try:
-            req = urllib.request.Request(
-                "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest",
-                headers={"Accept": "application/vnd.github+json",
-                         "User-Agent": f"ZHDownloader/{APP_VER}"})
-            with urllib.request.urlopen(req, timeout=10) as r:
-                data = json.loads(r.read())
-            latest = (data.get("tag_name","") or "").lstrip("v").strip()
-            if not latest:
-                self.log("[update] could not read latest release tag")
+        """Check new release. Tries zhmotions.com FIRST (custom server), GitHub as fallback.
+
+        Custom server expected to host JSON at:
+          https://www.zhmotions.com/zhdownloader/version.json
+        Format:
+          {"version": "6.3.5", "download_url": "https://.../ZHDownloader.zip",
+           "notes": "release notes here"}
+        """
+        sources = [
+            ("zhmotions.com", "https://www.zhmotions.com/zhdownloader/version.json", self._parse_zhm_json),
+            ("github",        "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest", self._parse_gh_json),
+        ]
+        for name, url, parser in sources:
+            try:
+                req = urllib.request.Request(url, headers={
+                    "Accept": "application/json",
+                    "User-Agent": f"ZHDownloader/{APP_VER}"})
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    data = json.loads(r.read())
+                latest, html_url, notes = parser(data)
+                if not latest:
+                    self.log(f"[update] {name}: empty version field")
+                    continue
+                def parse(v): return tuple(int(x) for x in v.split(".") if x.isdigit())
+                if parse(latest) <= parse(APP_VER):
+                    self.log(f"[update] v{APP_VER} is latest ({name}: v{latest})")
+                    return
+                self.log(f"[update] NEW VERSION v{latest} (you have v{APP_VER}) — source: {name}")
+                self.root.after(0, lambda l=latest, u=html_url: self._show_update_prompt(l, u))
                 return
-            def parse(v): return tuple(int(x) for x in v.split(".") if x.isdigit())
-            if parse(latest) <= parse(APP_VER):
-                self.log(f"[update] current v{APP_VER} is latest (server: v{latest})")
-                return
-            html_url = data.get("html_url", "https://github.com/zhmotions/zhmotionsdownloader/releases/latest")
-            self.log(f"[update] NEW VERSION available: v{latest} (you have v{APP_VER})")
-            self.root.after(0, lambda: self._show_update_prompt(latest, html_url))
-        except Exception as e:
-            self.log(f"[update] check failed: {e}")
+            except Exception as e:
+                self.log(f"[update] {name} check failed: {e}")
+        # All sources failed
+        self.log("[update] all sources unreachable")
+
+    def _parse_zhm_json(self, data):
+        return (
+            (data.get("version","") or "").lstrip("v").strip(),
+            data.get("download_url") or data.get("url") or "https://www.zhmotions.com",
+            data.get("notes",""),
+        )
+
+    def _parse_gh_json(self, data):
+        return (
+            (data.get("tag_name","") or "").lstrip("v").strip(),
+            data.get("html_url", "https://github.com/zhmotions/zhmotionsdownloader/releases/latest"),
+            data.get("body",""),
+        )
 
     def _update_ytdlp_silent(self):
         """Auto-download latest yt-dlp wheel → cache to user dir.
