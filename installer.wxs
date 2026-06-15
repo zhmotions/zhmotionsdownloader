@@ -24,11 +24,13 @@
         <Directory Id="INSTALLFOLDER" Name="$(var.AppName)">
           <Component Id="MainExecutable" Guid="BEF0493E-D02D-4BCF-A51B-F8C19B71CDAA" Win64="yes">
             <File Id="AppExe" Source="$(var.ExePath)" KeyPath="yes" Checksum="yes" />
-            <!-- zhdownloader:// URL scheme — lets the browser extension launch the
-                 app when it's closed (per-user, no admin). Windows passes the URL
-                 as %1; the app just needs to start so the extension can flush. -->
+          </Component>
+          <!-- zhdownloader:// URL scheme — separate per-user component (HKCU) so it
+               can't mix with the per-machine exe (WiX ICE57). Lets the browser
+               extension launch the app when closed; Windows passes the URL as %1. -->
+          <Component Id="UrlScheme" Guid="7C1E9A52-3B84-4F0D-9E26-1A7D5C8B0F39">
             <RegistryKey Root="HKCU" Key="Software\Classes\zhdownloader">
-              <RegistryValue Type="string" Value="URL:ZH Downloader Protocol" />
+              <RegistryValue Type="string" Value="URL:ZH Downloader Protocol" KeyPath="yes" />
               <RegistryValue Name="URL Protocol" Type="string" Value="" />
               <RegistryKey Key="shell\open\command">
                 <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]ZHDownloader.exe&quot; &quot;%1&quot;" />
@@ -74,6 +76,7 @@
 
     <Feature Id="MainFeature" Title="$(var.AppName)" Level="1">
       <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="UrlScheme" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="DesktopShortcut" />
     </Feature>
