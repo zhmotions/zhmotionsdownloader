@@ -6,6 +6,7 @@ drag-drop URLs, tray icon, card thumbnails.
 """
 
 import os, sys, threading, queue as Q, json, subprocess, shutil, platform
+import webbrowser
 import re, time, urllib.request, urllib.parse, urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,6 +64,43 @@ THUMBS_DIR   = Path.home() / ".zhdownloader-thumbs"
 THREADS         = 8
 MAX_HISTORY     = 500
 MAX_CONCURRENT  = 5
+
+# -- Licensing (free app, Pro unlocked by a key — same system as ZH MacCleaner) --
+LICENSE_URL = "https://zhmotions.com/api/license/verify"   # non-www + no .php
+LIC_FILE    = Path.home() / ".config" / "zhdownloader" / "license.json"
+GRACE_DAYS  = 14
+_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+       "(KHTML, like Gecko) Version/17.0 Safari/605.1.15")   # Cloudflare blocks bot UAs
+
+def _device_id():
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["ioreg","-rd1","-c","IOPlatformExpertDevice"],
+                                 capture_output=True, text=True).stdout
+            import re as _re
+            m = _re.search(r'IOPlatformUUID" = "([^"]+)"', out)
+            uid = m.group(1) if m else "unknown"
+        else:
+            out = subprocess.run(["wmic","csproduct","get","UUID"],
+                                 capture_output=True, text=True).stdout
+            uid = "".join(out.split("\n")[1:]).strip() or "unknown"
+    except Exception:
+        uid = "unknown"
+    import hashlib as _h
+    return _h.sha256(uid.encode()).hexdigest()[:16]
+
+def license_verify(key):
+    """Return (ok|None, plan). None = couldn't reach server."""
+    try:
+        import urllib.request, urllib.parse
+        body = urllib.parse.urlencode({"key":key,"app":"downloader",
+                                       "device":_device_id(),"v":APP_VER}).encode()
+        req = urllib.request.Request(LICENSE_URL, data=body, headers={
+            "User-Agent": _UA, "Content-Type": "application/x-www-form-urlencoded"})
+        d = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+        return bool(d.get("valid")), (d.get("plan") or "pro"), (d.get("message") or "")
+    except Exception as e:
+        return None, None, str(e)
 
 # -- Themes -----------------------------------------------------------------
 THEMES = {
@@ -548,6 +586,8 @@ class App:
         self.state     = jload(STATE_PATH,{"queue":[]})
         self.history   = HistoryStore()
         self.stats     = StatsStore()
+        self.lic       = {"key":"", "plan":"free", "valid":False, "checked":0}
+        self._load_license()
         self._mq       = Q.Queue()
         self._stop     = threading.Event()
         self._paused   = False
@@ -583,6 +623,7 @@ class App:
         self._setup_tray()
         # Background update check (10s after startup, once per session)
         root.after(10000, self._check_for_updates_async)
+        root.after(2000, self._reverify_license)   # refresh Pro status online
         # Apply autostart preference (idempotent — won't duplicate entry)
         if self.cfg.get("autostart", True):
             root.after(3000, lambda: self._apply_autostart(True))
@@ -673,6 +714,11 @@ class App:
                  bg=T["HEADER"], fg=T["MUTED"], font=("Helvetica",9)).pack(anchor="w")
         # Right side info pills
         right = tk.Frame(hi, bg=T["HEADER"]); right.pack(side="right")
+        self._pro_btn = tk.Button(right, text=("⭐ Pro ✓" if self.is_pro() else "⭐ Upgrade"),
+                                  command=self._open_pro, bd=0, relief="flat", cursor="hand2",
+                                  bg=T["HEADER"], fg=T["ACCENT"], activebackground=T["HEADER"],
+                                  font=("Helvetica", 10, "bold"))
+        self._pro_btn.pack(side="right", padx=(0,12))
         self._dot = tk.Label(right, text="● Bridge", bg=T["HEADER"], fg=T["MUTED"], font=("Helvetica",9))
         self._dot.pack(side="right", padx=(0,10))
         self._concur_lbl = tk.Label(right, text="0/0 active", bg=T["HEADER"], fg=T["MUTED"], font=("Helvetica",9))
@@ -1646,6 +1692,95 @@ class App:
             self._sched_timer = self.root.after(1000,
                 lambda: self._countdown_tick(target_time, urls, out, fk))
 
+    # ── Licensing (Free + Pro) ──────────────────────────────────────────
+    def is_pro(self):
+        return bool(self.lic.get("valid")) and self.lic.get("plan") == "pro"
+
+    def _load_license(self):
+        try:
+            d = json.loads(LIC_FILE.read_text())
+            self.lic.update(d)
+            if self.lic.get("valid") and (time.time() - self.lic.get("checked",0)) > GRACE_DAYS*86400:
+                self.lic["valid"] = False
+        except Exception:
+            pass
+
+    def _save_license(self):
+        try:
+            LIC_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LIC_FILE.write_text(json.dumps(self.lic))
+        except Exception:
+            pass
+
+    def _reverify_license(self):
+        key = self.lic.get("key")
+        if not key: return
+        def run():
+            ok, plan, _ = license_verify(key)
+            if ok is None: return
+            self.lic.update({"valid":bool(ok), "plan":plan or "free", "checked":time.time()})
+            self._save_license()
+            try: self.root.after(0, self._refresh_pro_badge)
+            except Exception: pass
+        threading.Thread(target=run, daemon=True).start()
+
+    def _refresh_pro_badge(self):
+        if hasattr(self, "_pro_btn"):
+            self._pro_btn.configure(text=("⭐ Pro ✓" if self.is_pro() else "⭐ Upgrade"))
+
+    def _open_pro(self):
+        win = tk.Toplevel(self.root); win.title("ZH Downloader Pro")
+        win.configure(bg=T["BG"]); win.geometry("440x420"); win.resizable(False, False)
+        tk.Label(win, text="ZH Downloader Pro", bg=T["BG"], fg=T["ACCENT"],
+                 font=("Helvetica", 18, "bold")).pack(anchor="w", padx=18, pady=(16,2))
+        status = tk.Label(win, bg=T["BG"], font=("Helvetica", 12, "bold"))
+        status.pack(anchor="w", padx=18)
+        feats = ("✓  4K / 8K downloads", "✓  Batch & playlists (many URLs at once)",
+                 "✓  Scheduler", "✓  Faster concurrent downloads",
+                 "✓  HLS / DASH protected streams")
+        for f in feats:
+            tk.Label(win, text="   "+f, bg=T["BG"], fg=T["TEXT"], anchor="w").pack(fill="x", padx=18)
+        tk.Label(win, text="License key", bg=T["BG"], fg=T["TEXT"], anchor="w",
+                 font=("Helvetica", 11, "bold")).pack(fill="x", padx=18, pady=(14,2))
+        row = tk.Frame(win, bg=T["BG"]); row.pack(fill="x", padx=18)
+        entry = tk.Entry(row, font=("Menlo", 12)); entry.pack(side="left", fill="x", expand=True, ipady=4)
+        def do_activate():
+            key = entry.get().strip()
+            if not key: messagebox.showinfo("License","Enter your key."); return
+            status.configure(text="Verifying…", fg=T["MUTED"])
+            def run():
+                ok, plan, msg = license_verify(key)
+                def done():
+                    if ok is None: messagebox.showwarning("License","Couldn't reach server. Check internet.")
+                    elif ok:
+                        self.lic.update({"key":key,"valid":True,"plan":plan or "pro","checked":time.time()})
+                        self._save_license(); self._refresh_pro_badge(); _set_status()
+                        messagebox.showinfo("License","✅ Pro unlocked. Thank you!")
+                    else:
+                        messagebox.showwarning("License", msg or "Invalid or inactive key.")
+                self.root.after(0, done)
+            threading.Thread(target=run, daemon=True).start()
+        tk.Button(row, text="Activate", command=do_activate).pack(side="right", padx=(8,0))
+        def deactivate():
+            if not messagebox.askyesno("Deactivate","Remove license from this device?"): return
+            self.lic = {"key":"","plan":"free","valid":False,"checked":0}
+            try: LIC_FILE.unlink()
+            except Exception: pass
+            self._save_license(); self._refresh_pro_badge(); _set_status()
+        def _set_status():
+            if self.is_pro():
+                k = self.lic.get("key",""); masked = (k[:9]+"••••-"+k[-4:]) if len(k)>13 else k
+                status.configure(text="● PRO active ✓", fg=T["GREEN"])
+                entry.delete(0,"end"); entry.insert(0, masked)
+            else:
+                status.configure(text="○ Free version", fg=T["MUTED"])
+        link = tk.Label(win, text="Buy a key → zhmotions.com/shop", bg=T["BG"], fg=T["ACCENT"],
+                        cursor="hand2", font=("Helvetica", 11, "underline"))
+        link.pack(anchor="w", padx=18, pady=(12,0))
+        link.bind("<Button-1>", lambda e: webbrowser.open("https://zhmotions.com/shop"))
+        tk.Button(win, text="Deactivate", command=deactivate).pack(anchor="w", padx=18, pady=12)
+        _set_status()
+
     def _start(self):
         import datetime
         raw  = self.url_box.get("1.0","end")
@@ -1681,11 +1816,25 @@ class App:
         fk = self.fmt_var.get().split(":")[0].strip()
         if fk not in FMTS: fk="4k"
 
+        # ── Free / Pro gate ──  Free = 1 URL, up to 1080p, no scheduler.
+        if not self.is_pro():
+            if len(urls) > 1:
+                self.log(f"[pro] Batch is a Pro feature — downloading 1 of {len(urls)}. ⭐ Upgrade for batch.")
+                urls = urls[:1]
+            if fk == "4k":
+                fk = "hd"
+                self.fmt_var.set(f"hd: {FMTS['hd']['label']}")
+                self.log("[pro] 4K is a Pro feature — using 1080p. ⭐ Upgrade for 4K.")
+
         self.cfg.update({"dir":out,"fmt":fk,"cookies":self.ck_var.get(),
                          "clip":self._clip_on.get()})
         jsave(CFG_PATH,self.cfg)
 
         delay = self._get_sched_delay()
+        if (not self.is_pro()) and delay and delay > 0:
+            self.log("[pro] Scheduler is a Pro feature. ⭐ Upgrade to schedule.")
+            messagebox.showinfo("ZH Downloader Pro", "Scheduling is a Pro feature.\nUpgrade in ⭐ Pro to schedule downloads.")
+            delay = 0
         if delay and delay > 0:
             if self._sched_timer: self.root.after_cancel(self._sched_timer)
             target = datetime.datetime.now() + datetime.timedelta(seconds=delay)
@@ -1737,6 +1886,7 @@ class App:
         else:
             cfg_val = int(self.cfg.get("concurrent", 3))
         max_par = max(1, min(MAX_CONCURRENT, cfg_val))
+        if not self.is_pro(): max_par = 1   # Free = single concurrent; Pro = parallel
         self.cfg["concurrent"] = max_par
         jsave(CFG_PATH, self.cfg)
         self.log(f"[start] queue={len(self._items)} items, concurrent={max_par}")
