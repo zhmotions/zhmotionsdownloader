@@ -336,11 +336,13 @@ async function queuePending(url, referer) {
   await chrome.storage.local.set({ pending });
 }
 
-// launch the desktop app via its URL scheme (only opens it; no data needed)
+// launch the desktop app via its URL scheme (only opens it; no data needed).
+// Must be an ACTIVE tab so the browser's "Open ZH Downloader?" prompt is visible —
+// closing it too early (old bug) dismissed the prompt before the app launched.
 function launchApp() {
   try {
-    chrome.tabs.create({ url: "zhdownloader://open", active: false }, (tab) => {
-      if (tab) setTimeout(() => { try { chrome.tabs.remove(tab.id); } catch {} }, 1500);
+    chrome.tabs.create({ url: "zhdownloader://open", active: true }, (tab) => {
+      if (tab) setTimeout(() => { try { chrome.tabs.remove(tab.id); } catch {} }, 8000);
     });
   } catch {}
 }
