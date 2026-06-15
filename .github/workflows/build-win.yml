@@ -15,7 +15,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
@@ -105,13 +105,13 @@ jobs:
             dist\installer.wixobj
 
       - name: Upload EXE (portable)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZHDownloader-Windows-EXE
           path: dist/ZHDownloader.exe
 
       - name: Upload MSI (installer)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZHDownloader-Windows-MSI
           path: dist/ZHDownloader-Setup.msi
@@ -121,7 +121,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Python with tkinter
         run: |
@@ -234,13 +234,13 @@ jobs:
             "ZHDownloader-macOS.pkg"
 
       - name: Upload DMG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZHDownloader-macOS-DMG
           path: ZHDownloader-macOS.dmg
 
       - name: Upload PKG
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ZHDownloader-macOS-PKG
           path: ZHDownloader-macOS.pkg
@@ -252,13 +252,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: release-files
           merge-multiple: true
