@@ -1815,10 +1815,15 @@ class App:
     def _do_pause(self):
         self._paused=True; self._stop.set()
         self.btn_pause.configure(state="disabled")
+        self.btn_cancel.configure(state="disabled")
+        self.status_var.set("Pausing… (finishing current chunk)")   # instant feedback
         self.log("[pause] pausing all active downloads...")
 
     def _do_cancel(self):
         self._paused=False; self._stop.set()
+        self.btn_cancel.configure(state="disabled")
+        self.btn_pause.configure(state="disabled")
+        self.status_var.set("Cancelling… (stopping downloads)")      # instant feedback
         if self._sched_timer:
             self.root.after_cancel(self._sched_timer)
             self._sched_timer = None
