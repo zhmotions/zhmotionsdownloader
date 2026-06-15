@@ -81,7 +81,16 @@ if [ -f "$PLIST" ]; then
     || /usr/libexec/PlistBuddy -c "Add :NSHumanReadableCopyright string '$APP_COPYRIGHT'" "$PLIST"
   /usr/libexec/PlistBuddy -c "Set :NSAppleEventsUsageDescription 'ZH Downloader uses AppleScript for notifications.'" "$PLIST" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string 'ZH Downloader uses AppleScript for notifications.'" "$PLIST"
-  echo "    Info.plist patched"
+  # Register zhdownloader:// scheme so the extension can LAUNCH the app when it's
+  # closed. The scheme only opens the app; queued URLs are flushed by the
+  # extension once the bridge is up (no AppleEvent / pyobjc needed).
+  /usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string com.zhmotions.zhdownloader" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$PLIST"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string zhdownloader" "$PLIST"
+  echo "    Info.plist patched (+ zhdownloader:// scheme)"
 fi
 
 [ ! -d "dist/$APP_BUNDLE" ] && echo "PyInstaller failed." && exit 1

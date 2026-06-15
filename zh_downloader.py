@@ -47,7 +47,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.3.6"
+APP_VER     = "6.3.7"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -483,8 +483,16 @@ class FileDL:
 class Bridge(BaseHTTPRequestHandler):
     app = None
     def log_message(self,*a): pass
+    def _origin_ok(self):
+        """Only the browser extension may trigger downloads. The browser sets
+        Origin itself (a web page cannot forge it), so we block any real website
+        (http/https origin) and allow extension origins or no-origin (cli)."""
+        o = (self.headers.get("Origin") or "").lower()
+        return not (o.startswith("http://") or o.startswith("https://"))
     def _c(self):
-        self.send_header("Access-Control-Allow-Origin","*")
+        o = self.headers.get("Origin") or ""
+        # echo extension origin back (so it can read the reply); never wildcard a site
+        self.send_header("Access-Control-Allow-Origin", o if o.startswith(("chrome-extension://","moz-extension://")) else "null")
         self.send_header("Access-Control-Allow-Methods","GET,POST,OPTIONS")
         self.send_header("Access-Control-Allow-Headers","Content-Type")
     def do_OPTIONS(self):
@@ -499,6 +507,9 @@ class Bridge(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path!="/download":
             self.send_response(404); self._c(); self.end_headers(); return
+        if not self._origin_ok():                       # block websites
+            self.send_response(403); self._c(); self.end_headers()
+            self.wfile.write(b'{"ok":false,"err":"forbidden"}'); return
         try:
             n = int(self.headers.get("Content-Length","0"))
             d = json.loads(self.rfile.read(n) or b"{}")
@@ -1547,19 +1558,19 @@ class App:
         if referer: self._referers[url] = referer
         self.log(f"[bridge] {url[:80]}")
         if self._is_running() and getattr(self, "_sem", None) is not None:
-            # Live-enqueue into running pool so additional URLs actually download
+            # Live-enqueue into the running pool. Do NOT also add to url_box —
+            # it is already downloading; re-adding doubles it on the next Start.
             if self._enqueue_live(url, referer):
                 self.log("[bridge] Added to live queue")
-            cur = self.url_box.get("1.0","end").strip()
-            if url not in cur:
-                self.url_box.insert("end", ("\n"+url) if cur else url)
-        else:
-            cur = self.url_box.get("1.0","end").strip()
-            if cur and url not in cur:
-                self.url_box.insert("end", "\n"+url)
             else:
-                self.url_box.delete("1.0","end")
-                self.url_box.insert("1.0", url)
+                self.log("[bridge] Already in queue — skipped")
+        else:
+            # Not running: stage in the box with exact per-line dedup, then start.
+            lines = [l.strip() for l in self.url_box.get("1.0","end").splitlines() if l.strip()]
+            if url not in lines:
+                lines.append(url)
+            self.url_box.delete("1.0","end")
+            self.url_box.insert("1.0", "\n".join(lines))
             self.root.update_idletasks()
             self._start()
 
@@ -1705,6 +1716,10 @@ class App:
             for it in self._items:
                 it.status = "waiting"; it.pct = 0; it.speed_v = 0; it.eta_v = None
                 self._mq.put(("item_up", it))
+        # URLs are now captured as items — clear the box so a later Start /
+        # scheduler / bridge add can't re-download the same links.
+        try: self.url_box.delete("1.0", "end")
+        except Exception: pass
         self.btn_dl.configure(state="disabled", text="Running...")
         self.btn_cancel.configure(state="normal")
         self.btn_pause.configure(state="normal")

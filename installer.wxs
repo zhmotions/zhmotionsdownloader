@@ -24,6 +24,16 @@
         <Directory Id="INSTALLFOLDER" Name="$(var.AppName)">
           <Component Id="MainExecutable" Guid="BEF0493E-D02D-4BCF-A51B-F8C19B71CDAA" Win64="yes">
             <File Id="AppExe" Source="$(var.ExePath)" KeyPath="yes" Checksum="yes" />
+            <!-- zhdownloader:// URL scheme — lets the browser extension launch the
+                 app when it's closed (per-user, no admin). Windows passes the URL
+                 as %1; the app just needs to start so the extension can flush. -->
+            <RegistryKey Root="HKCU" Key="Software\Classes\zhdownloader">
+              <RegistryValue Type="string" Value="URL:ZH Downloader Protocol" />
+              <RegistryValue Name="URL Protocol" Type="string" Value="" />
+              <RegistryKey Key="shell\open\command">
+                <RegistryValue Type="string" Value="&quot;[INSTALLFOLDER]ZHDownloader.exe&quot; &quot;%1&quot;" />
+              </RegistryKey>
+            </RegistryKey>
           </Component>
         </Directory>
       </Directory>

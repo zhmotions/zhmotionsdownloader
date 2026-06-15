@@ -177,7 +177,11 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
 });
 
 // ── Context menu ───────────────────────────────────────────────────────────
+// When the browser/extension wakes, push any downloads queued while the app was closed.
+chrome.runtime.onStartup.addListener(() => { try { flushWhenReady(); } catch {} });
+
 chrome.runtime.onInstalled.addListener(() => {
+  try { flushWhenReady(); } catch {}
   // Main download option
   chrome.contextMenus.create({
     id:       "zh-download-link",
@@ -301,20 +305,61 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ── Send to desktop app ────────────────────────────────────────────────────
+async function postToApp(url, referer) {
+  const r = await fetch("http://127.0.0.1:9613/download", {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ url, referer: referer||url }),
+  });
+  return r.json();
+}
+
 async function sendToApp(url, referer) {
   try {
-    const r = await fetch("http://127.0.0.1:9613/download", {
-      method:"POST",
-      headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ url, referer: referer||url }),
-    });
-    const d = await r.json();
+    const d = await postToApp(url, referer);
     if (d.ok) notify("Sent to ZH Downloader", url.slice(0,60)+"…");
     return d;
   } catch(e) {
-    notify("ZH Downloader — App not running", "Open the desktop app first.");
-    return { ok:false, err:String(e) };
+    // App is closed → queue it, launch the app, flush when the bridge is up.
+    await queuePending(url, referer);
+    launchApp();
+    notify("Opening ZH Downloader…", "Your download will start automatically.");
+    flushWhenReady();
+    return { ok:true, queued:true };
   }
+}
+
+// pending queue (survives until the app comes online)
+async function queuePending(url, referer) {
+  const { pending = [] } = await chrome.storage.local.get("pending");
+  if (!pending.some(p => p.url === url)) pending.push({ url, referer: referer||url });
+  await chrome.storage.local.set({ pending });
+}
+
+// launch the desktop app via its URL scheme (only opens it; no data needed)
+function launchApp() {
+  try {
+    chrome.tabs.create({ url: "zhdownloader://open", active: false }, (tab) => {
+      if (tab) setTimeout(() => { try { chrome.tabs.remove(tab.id); } catch {} }, 1500);
+    });
+  } catch {}
+}
+
+// poll the bridge; once it answers, send everything that was queued
+let _flushing = false;
+async function flushWhenReady() {
+  if (_flushing) return; _flushing = true;
+  for (let i = 0; i < 30; i++) {                 // ~60s window
+    if (await pingApp()) {
+      const { pending = [] } = await chrome.storage.local.get("pending");
+      for (const p of pending) { try { await postToApp(p.url, p.referer); } catch {} }
+      await chrome.storage.local.set({ pending: [] });
+      if (pending.length) notify("ZH Downloader ready", `Sent ${pending.length} download(s).`);
+      break;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  _flushing = false;
 }
 
 async function pingApp() {
