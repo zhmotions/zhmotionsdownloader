@@ -95,6 +95,14 @@ fi
 
 [ ! -d "dist/$APP_BUNDLE" ] && echo "PyInstaller failed." && exit 1
 
+# Ad-hoc codesign — without a signature, Apple Silicon calls the downloaded app
+# "damaged" with no easy bypass. Ad-hoc turns it into the normal "unidentified
+# developer" prompt that a one-time right-click → Open clears.
+echo "==> Ad-hoc signing"
+xattr -cr "dist/$APP_BUNDLE" 2>/dev/null || true
+codesign --force --deep --sign - "dist/$APP_BUNDLE" || echo "  ⚠ codesign failed"
+codesign --verify --deep --strict "dist/$APP_BUNDLE" >/dev/null 2>&1 && echo "  signed ✓" || true
+
 echo "==> 5/6 Build .dmg"
 rm -f "$DMG_NAME"
 

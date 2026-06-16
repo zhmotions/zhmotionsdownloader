@@ -178,6 +178,15 @@ jobs:
           echo "URL scheme registered:"
           /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$PLIST"
 
+      - name: Ad-hoc codesign (.app)
+        # Must run AFTER the plist edit (editing invalidates any prior signature).
+        # Without a signature, Apple Silicon flags the download as "damaged"; an
+        # ad-hoc signature makes it the normal right-click → Open prompt instead.
+        run: |
+          xattr -cr "dist/ZH Downloader.app" 2>/dev/null || true
+          codesign --force --deep --sign - "dist/ZH Downloader.app"
+          codesign --verify --deep --strict "dist/ZH Downloader.app" && echo "signed ✓"
+
       - name: Build .dmg
         run: |
           brew install create-dmg || true
