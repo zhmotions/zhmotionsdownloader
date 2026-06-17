@@ -67,6 +67,7 @@ pyinstaller \
   --osx-bundle-identifier "$APP_BUNDLE_ID" \
   $ICON_OPT \
   --add-data assets:assets \
+  --hidden-import certifi --collect-data certifi \
   $ADD_BINARY \
   "$PY_SCRIPT"
 

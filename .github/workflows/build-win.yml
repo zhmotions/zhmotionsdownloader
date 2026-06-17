@@ -82,6 +82,7 @@ jobs:
             --hidden-import pystray._win32 `
             --hidden-import pystray._base `
             --copy-metadata pystray `
+            --hidden-import certifi --collect-data certifi `
             zh_downloader.py
 
       - name: Build MSI
@@ -117,7 +118,7 @@ jobs:
           path: dist/ZHDownloader-Setup.msi
 
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-14   # Sonoma -> minos 14 -> runs on macOS 14, 15 (Sequoia) and 26 (older runners give lower minos = wider client support)
     permissions:
       contents: read
     steps:
@@ -164,6 +165,7 @@ jobs:
             --hidden-import Foundation \
             --hidden-import objc \
             --copy-metadata pystray \
+            --hidden-import certifi --collect-data certifi \
             zh_downloader.py
 
       - name: Register zhdownloader:// URL scheme

@@ -48,7 +48,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.3.9"
+APP_VER     = "6.4.0"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -64,6 +64,16 @@ THUMBS_DIR   = Path.home() / ".zhdownloader-thumbs"
 THREADS         = 8
 MAX_HISTORY     = 500
 MAX_CONCURRENT  = 5
+
+# SSL context with a real CA bundle — a frozen .app on a fresh client Mac can't always
+# find system certs → urlopen SSL error → "Couldn't reach the license server". Bundle certifi.
+import ssl
+try:
+    import certifi
+    SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    try: SSL_CTX = ssl.create_default_context()
+    except Exception: SSL_CTX = None
 
 # -- Licensing (free app, Pro unlocked by a key — same system as ZH MacCleaner) --
 LICENSE_URL = "https://zhmotions.com/api/license/verify"   # non-www + no .php
@@ -97,7 +107,7 @@ def license_verify(key):
                                        "device":_device_id(),"v":APP_VER}).encode()
         req = urllib.request.Request(LICENSE_URL, data=body, headers={
             "User-Agent": _UA, "Content-Type": "application/x-www-form-urlencoded"})
-        d = json.loads(urllib.request.urlopen(req, timeout=10).read().decode())
+        d = json.loads(urllib.request.urlopen(req, timeout=20, context=SSL_CTX).read().decode())
         return bool(d.get("valid")), (d.get("plan") or "pro"), (d.get("message") or "")
     except Exception as e:
         return None, None, str(e)
@@ -416,7 +426,7 @@ class FileDL:
         req = urllib.request.Request(self.url, method="HEAD",
               headers={"User-Agent":"ZHDownloader/5.0"})
         try:
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
                 total = int(r.headers.get("Content-Length",0))
                 res   = "bytes" in r.headers.get("Accept-Ranges","")
                 fname = ""
@@ -458,7 +468,7 @@ class FileDL:
             return
         h = {"User-Agent":"ZHDownloader/5.0","Range":f"bytes={rs}-{e}"}
         req = urllib.request.Request(self.url, headers=h)
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with urllib.request.urlopen(req, timeout=60, context=SSL_CTX) as r:
             with open(part,"ab") as f:
                 while True:
                     if self.cancel(): return
@@ -473,7 +483,7 @@ class FileDL:
         with self._lock: self._done += ex
         req = urllib.request.Request(self.url, headers=h)
         try:
-            with urllib.request.urlopen(req, timeout=60) as r:
+            with urllib.request.urlopen(req, timeout=60, context=SSL_CTX) as r:
                 if not self._total:
                     self._total = int(r.headers.get("Content-Length",0))+ex
                 with open(out,"ab") as f:
@@ -1423,7 +1433,7 @@ class App:
                 req = urllib.request.Request(thumb_url, headers={
                     "User-Agent":"Mozilla/5.0 ZHDownloader"
                 })
-                with urllib.request.urlopen(req, timeout=10) as r:
+                with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as r:
                     data = r.read()
                 cache.write_bytes(data)
             # Load + resize
@@ -2693,7 +2703,7 @@ class App:
                 req = urllib.request.Request(page, headers={
                     "User-Agent":"Mozilla/5.0 (compatible; ZHDownloader/5.0)"
                 })
-                with urllib.request.urlopen(req, timeout=15) as r:
+                with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
                     html = r.read().decode("utf-8","ignore")
             except Exception as ex:
                 result.insert("end", f"Failed: {ex}\n"); return
@@ -3025,7 +3035,7 @@ class App:
                 req = urllib.request.Request(url, headers={
                     "Accept": accept,
                     "User-Agent": f"ZHDownloader/{APP_VER}"})
-                with urllib.request.urlopen(req, timeout=10) as r:
+                with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as r:
                     body = r.read()
                 if accept.startswith("application/json"):
                     data = json.loads(body)
@@ -3101,7 +3111,7 @@ class App:
             # Query PyPI for latest
             req = urllib.request.Request("https://pypi.org/pypi/yt-dlp/json",
                 headers={"User-Agent": f"ZHDownloader/{APP_VER}"})
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as r:
                 data = json.loads(r.read())
             latest_ver = data.get("info",{}).get("version","")
             if not latest_ver or latest_ver == current_ver: return
@@ -3114,7 +3124,7 @@ class App:
             self.log(f"[update] yt-dlp {current_ver} → {latest_ver} (background)")
             # Download wheel
             tmp = cache.parent / f".ytdlp-{latest_ver}.whl"
-            with urllib.request.urlopen(wheel_url, timeout=60) as r, open(tmp, "wb") as f:
+            with urllib.request.urlopen(wheel_url, timeout=60, context=SSL_CTX) as r, open(tmp, "wb") as f:
                 shutil.copyfileobj(r, f)
             # Extract wheel (.whl is zip) to cache dir
             import zipfile
