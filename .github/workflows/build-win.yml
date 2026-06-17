@@ -216,10 +216,16 @@ jobs:
           RES_DIR=$(mktemp -d)
           cp student-pack/LICENSE-STUDENT.txt "$RES_DIR/License.txt"
           ls -la "$RES_DIR"
+          # postinstall strips the quarantine flag so the unsigned app opens WITHOUT
+          # the macOS "damaged"/"can't be opened" warning after install.
+          SCR=$(mktemp -d)
+          printf '#!/bin/sh\n/usr/bin/xattr -cr "/Applications/ZH Downloader.app" 2>/dev/null || true\nexit 0\n' > "$SCR/postinstall"
+          chmod +x "$SCR/postinstall"
           pkgbuild \
             --root "$PKG_ROOT" \
+            --scripts "$SCR" \
             --identifier "com.zhmotions.downloader" \
-            --version "6.3.6" \
+            --version "6.4.1" \
             --install-location "/" \
             "$COMP_DIR/component.pkg"
           cat > "$COMP_DIR/dist.xml" << 'DISTEOF'
