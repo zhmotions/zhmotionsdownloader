@@ -105,17 +105,15 @@ jobs:
             -out "dist\ZHDownloader-Setup.msi" `
             dist\installer.wixobj
 
-      - name: Upload EXE (portable)
-        uses: actions/upload-artifact@v5
+      # Publish straight to the Release (ephemeral artifact storage quota is full;
+      # Release assets are separate + persistent). Each job appends to the same tag.
+      - name: Publish Windows assets to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
         with:
-          name: ZHDownloader-Windows-EXE
-          path: dist/ZHDownloader.exe
-
-      - name: Upload MSI (installer)
-        uses: actions/upload-artifact@v5
-        with:
-          name: ZHDownloader-Windows-MSI
-          path: dist/ZHDownloader-Setup.msi
+          files: |
+            dist/ZHDownloader.exe
+            dist/ZHDownloader-Setup.msi
 
   build-macos:
     runs-on: macos-14   # Sonoma -> minos 14 -> runs on macOS 14, 15 (Sequoia) and 26 (older runners give lower minos = wider client support)
@@ -244,83 +242,10 @@ jobs:
             --version "6.3.6" \
             "ZHDownloader-macOS.pkg"
 
-      - name: Upload DMG
-        uses: actions/upload-artifact@v5
-        with:
-          name: ZHDownloader-macOS-DMG
-          path: ZHDownloader-macOS.dmg
-
-      - name: Upload PKG
-        uses: actions/upload-artifact@v5
-        with:
-          name: ZHDownloader-macOS-PKG
-          path: ZHDownloader-macOS.pkg
-
-  release:
-    needs: [build-windows, build-macos]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v5
-        with:
-          path: release-files
-          merge-multiple: true
-
-      - name: Build single mega-bundle ZHDownloader-COMPLETE.zip
-        run: |
-          # Stage all student-facing files into one folder
-          STAGE=$(mktemp -d)/ZHDownloader-COMPLETE
-          mkdir -p "$STAGE/Mac" "$STAGE/Windows" "$STAGE/Browser-Extension" "$STAGE/Docs"
-
-          # Installers
-          cp release-files/ZHDownloader-macOS.pkg     "$STAGE/Mac/" 2>/dev/null || true
-          cp release-files/ZHDownloader-macOS.dmg     "$STAGE/Mac/" 2>/dev/null || true
-          cp release-files/ZHDownloader-Setup.msi     "$STAGE/Windows/" 2>/dev/null || true
-          cp release-files/ZHDownloader.exe           "$STAGE/Windows/" 2>/dev/null || true
-
-          # Browser extension folder (unpacked — ready for "Load unpacked")
-          cp -R extension/* "$STAGE/Browser-Extension/"
-          rm -f "$STAGE/Browser-Extension/.DS_Store" 2>/dev/null || true
-
-          # Docs + license
-          cp -R student-pack/* "$STAGE/Docs/"
-
-          # Top-level quick-start README
-          cat > "$STAGE/README.txt" << 'EOF'
-          ZH Downloader — Student Bundle
-          =============================
-
-          Mac users → open Mac folder → double-click ZHDownloader-macOS.pkg
-          Win users → open Windows folder → double-click ZHDownloader-Setup.msi
-
-          Browser extension → see Browser-Extension/ folder + Docs/INSTALL-STUDENTS.md
-          Full guide → Docs/INSTALL-STUDENTS.md (or .html for PDF print)
-          License → Docs/LICENSE-STUDENT.txt
-
-          For ZH Motions students only. Do not redistribute.
-          www.zhmotions.com
-          EOF
-
-          # Build the mega zip
-          cd "$(dirname "$STAGE")"
-          zip -r "ZHDownloader-COMPLETE.zip" "ZHDownloader-COMPLETE" -x "*.DS_Store"
-          mv "ZHDownloader-COMPLETE.zip" "$GITHUB_WORKSPACE/release-files/"
-          ls -la "$GITHUB_WORKSPACE/release-files/"
-
-      - name: Create GitHub Release
+      - name: Publish macOS assets to Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          # Attach mega zip + individual installers (in case someone wants just one)
-          files: release-files/*
-          generate_release_notes: true
-          fail_on_unmatched_files: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            ZHDownloader-macOS.dmg
+            ZHDownloader-macOS.pkg
