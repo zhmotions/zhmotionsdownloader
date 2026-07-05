@@ -7,6 +7,7 @@ drag-drop URLs, tray icon, card thumbnails.
 
 import os, sys, threading, queue as Q, json, subprocess, shutil, platform
 import webbrowser
+from contextlib import nullcontext
 import re, time, urllib.request, urllib.parse, urllib.error
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -2248,21 +2249,51 @@ class App:
             t = threading.Thread(target=self._runner, args=(item,), daemon=True)
             self._workers.append(t); t.start()
 
-        # Watcher polls workers list (includes any live-enqueued late additions)
+        # Watcher polls workers list (includes any live-enqueued late additions).
+        # Self-healing: if all threads die but items are still "waiting" (a worker
+        # crashed, or a live-enqueue lost its slot), respawn workers for the
+        # leftovers instead of leaving the queue frozen. Bounded so a genuinely
+        # undownloadable item can't loop forever — after 2 respawns it's errored.
+        self._heal_tries = {}
         def watcher():
             while True:
                 time.sleep(0.4)
-                if not any(t.is_alive() for t in self._workers):
-                    # Grace period for late _recv_ext additions
-                    time.sleep(0.6)
-                    if not any(t.is_alive() for t in self._workers): break
+                if any(t.is_alive() for t in self._workers): continue
+                time.sleep(0.6)   # grace for late _recv_ext additions
+                if any(t.is_alive() for t in self._workers): continue
+                if self._stop.is_set(): break
+                # Pool idle — rescue any item left mid-flight.
+                stragglers = [it for it in self._items
+                              if it.status in ("waiting", "downloading")
+                              and not getattr(it, "_prev_run", False)]
+                if not stragglers: break
+                revived = False
+                for it in stragglers:
+                    n = self._heal_tries.get(id(it), 0)
+                    if n >= 2:
+                        it.status = "error"
+                        self.log(f"[error] gave up on: {getattr(it,'name',it.url)[:60]}")
+                        self._mq.put(("item_up", it)); continue
+                    self._heal_tries[id(it)] = n + 1
+                    it.status = "waiting"; it.pct = 0
+                    self._mq.put(("item_up", it))
+                    self.log(f"[recover] restarting stuck item: {getattr(it,'name',it.url)[:60]}")
+                    t = threading.Thread(target=self._runner, args=(it,), daemon=True)
+                    self._workers.append(t); t.start()
+                    revived = True
+                if not revived: break
             self._sem = None
             self._mq.put(("done", None))
         threading.Thread(target=watcher, daemon=True).start()
 
     def _runner(self, item):
-        # Phase 1: DOWNLOAD (semaphore-limited so YouTube/network isn't hammered)
-        with self._sem:
+        # Phase 1: DOWNLOAD (semaphore-limited so YouTube/network isn't hammered).
+        # Capture the semaphore locally + null-guard it: the watcher may set
+        # self._sem = None right as a late (live-enqueued) worker starts, and
+        # `with None:` used to raise AttributeError BEFORE the try — the thread
+        # died and the item froze at "waiting" forever (0 active, stuck queue).
+        sem = self._sem or nullcontext()
+        with sem:
             if self._stop.is_set():
                 item.status = "paused" if self._paused else "cancelled"
                 self._mq.put(("item_up", item)); return
@@ -2348,6 +2379,11 @@ class App:
         policy = self.cfg.get("conflict","rename")
         if policy == "overwrite": return p
         if policy == "skip":     return None
+        # A modal from a worker thread hangs Tk on macOS (freezes the whole pool).
+        # Conflict resolution always runs in a worker → never show the dialog
+        # here; fall through to auto-rename.
+        if policy == "ask" and threading.current_thread() is not threading.main_thread():
+            policy = "rename"
         if policy == "ask":
             ans = messagebox.askyesnocancel(APP_NAME,
                 f"File exists:\n{p.name}\n\nYes = overwrite, No = rename, Cancel = skip")
