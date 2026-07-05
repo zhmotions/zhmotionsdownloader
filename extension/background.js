@@ -432,4 +432,11 @@ if (chrome.webNavigation) {
   chrome.webNavigation.onCommitted.addListener(d => {
     if (d.frameId === 0) { tabState.set(d.tabId, []); updateBadge(d.tabId); }
   });
+  // SPA route changes (Artgrid/Artlist/YouTube navigate via history.pushState —
+  // no onCommitted fires). Without this, streams sniffed on PREVIOUS clips pile
+  // up in the tab list and the pill's auto-pick grabs a STALE master m3u8 →
+  // "same video downloads again / wrong video downloads".
+  chrome.webNavigation.onHistoryStateUpdated.addListener(d => {
+    if (d.frameId === 0) { tabState.set(d.tabId, []); updateBadge(d.tabId); }
+  });
 }

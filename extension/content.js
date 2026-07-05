@@ -768,6 +768,10 @@
     if (h.includes("pinterest."))   return p.indexOf("/pin/") >= 0;
     if (h.includes("instagram.com")) return /\/(reel|reels|p|tv)\//.test(p);
     if (h.includes("tiktok.com"))   return p.indexOf("/video/") >= 0 || p.indexOf("/photo/") >= 0;
+    // Stock grids hover-play previews of MANY clips — only offer the pill on a
+    // single clip's page, where the sniffed stream is unambiguous.
+    if (h.includes("artgrid.io"))   return p.indexOf("/clip/") >= 0;
+    if (h.includes("artlist.io"))   return /\/(clip|song)\//.test(p);
     return true;   // other sites: no feed-preview pattern — allow everywhere
   }
   document.addEventListener("mouseover", function (e) {
