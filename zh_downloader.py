@@ -1669,12 +1669,12 @@ class App:
             else:
                 self.log("[bridge] Already in queue — skipped")
         else:
-            # Not running: stage in the box with exact per-line dedup, then start.
-            lines = [l.strip() for l in self.url_box.get("1.0","end").splitlines() if l.strip()]
-            if url not in lines:
-                lines.append(url)
+            # Not running: download ONLY the clicked URL. Do NOT inherit whatever
+            # is sitting in the box — the clipboard watcher (on by default) and
+            # leftovers from earlier quietly stage URLs there, and inheriting
+            # them re-downloaded old/unrelated videos alongside the clicked one.
             self.url_box.delete("1.0","end")
-            self.url_box.insert("1.0", "\n".join(lines))
+            self.url_box.insert("1.0", url)
             self.root.update_idletasks()
             self._start()
 
@@ -2179,6 +2179,7 @@ class App:
         self.log(f"[start] queue={len(self._items)} items, concurrent={max_par}")
         # Store pool state on self so _recv_ext can live-enqueue mid-run
         self._sem = threading.Semaphore(max_par)
+        self._pp_sem = threading.Semaphore(1)   # transcodes one-at-a-time (see _runner)
         self._out = out
         self._fk  = fk
         self._workers = []
@@ -2220,9 +2221,18 @@ class App:
             with self._active_lock:
                 self._active_count -= 1
                 self._mq.put(("concur", (self._active_count, len(self._items))))
-        # Phase 2: POSTPROCESS (slot freed — next download already started)
+        # Phase 2: POSTPROCESS (slot freed — next download already started).
+        # Serialized by its own semaphore: with concurrent=5, five near-together
+        # finishes used to kick off five SIMULTANEOUS 4K transcodes — the hw
+        # encoder + CPU saturate and every one crawls. One at a time is faster
+        # in wall-clock and keeps the machine responsive while downloads flow.
         if item.status not in ("error","paused","cancelled"):
-            try: self._postprocess(item, self._fk)
+            pp_sem = getattr(self, "_pp_sem", None)
+            try:
+                if pp_sem is not None:
+                    with pp_sem: self._postprocess(item, self._fk)
+                else:
+                    self._postprocess(item, self._fk)
             except Exception as e: self.log(f"[warn] postprocess: {e}")
         item.end_t = time.time()
         if item.status == "done":
