@@ -48,10 +48,11 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.4.2"
+APP_VER     = "6.6.2"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
+EXT_STORE_URL = ""   # set after Chrome Web Store publish → app button opens it
 
 DEFAULT_DIR  = str(Path.home() / "Downloads" / "ZHDownloader")
 CFG_PATH     = Path.home() / ".zhdownloader.json"
@@ -207,10 +208,15 @@ def find_ff():
     # 2. Executable directory (next to .exe / .app)
     if getattr(sys, "frozen", False):
         exe_dir = Path(sys.executable).parent
-        # macOS .app: ffmpeg in Contents/MacOS or Contents/Resources
+        # macOS .app: PyInstaller puts bundled binaries in Contents/Frameworks; also check
+        # Contents/MacOS and Contents/Resources. (Frameworks was missing -> ffmpeg "not found"
+        # on machines without a system ffmpeg, breaking HLS/Artgrid and merged YouTube video.)
         candidates += [exe_dir/"ffmpeg.exe", exe_dir/"ffmpeg",
                        exe_dir/"bin"/"ffmpeg.exe", exe_dir/"bin"/"ffmpeg",
-                       exe_dir.parent/"Resources"/"ffmpeg"]
+                       exe_dir.parent/"Frameworks"/"ffmpeg",
+                       exe_dir.parent/"Frameworks"/"ffmpeg.exe",
+                       exe_dir.parent/"Resources"/"ffmpeg",
+                       exe_dir.parent/"Resources"/"ffmpeg.exe"]
 
     # 3. PATH (system-installed)
     p = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
@@ -296,25 +302,38 @@ def type_badge(url):
     return "FILE"
 
 # -- Format options ---------------------------------------------------------
-# Aggressive HD floor: require height>=1080 for HD format, height>=2160 for 4K.
-# If source has no HD/4K, yt-dlp errors and we report quality unavailable.
-# This prevents silent 360p downloads when user wants HD.
+# Prefer high res first (4K→1440→1080→720), but ALWAYS end with
+# "bestvideo+bestaudio/best" so we never hard-error on a video the site simply
+# doesn't offer in that resolution. Two things this final fallback fixes:
+#   1. Sites whose streams are video-only + a SEPARATE audio track and expose NO
+#      muxed format (Pinterest/most HLS): plain "best" wants one combined file
+#      and fails with "Requested format is not available" — "bestvideo+bestaudio"
+#      merges the two so it works.
+#   2. A clip whose max is < the requested tier (e.g. a 880p Pinterest video with
+#      4K selected): instead of erroring, gracefully take the best available.
+_TAIL = "/bestvideo+bestaudio/best"
 _4K = (
+    # "bestvideo[height>=2160]" already resolves to the single highest stream at
+    # or above 2160 — so 4320p (8K) is picked automatically when the source has
+    # it. The explicit >=4320 clause just documents/guarantees 8K-first.
+    "bestvideo[height>=4320]+bestaudio/"
     "bestvideo[height>=2160][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
     "bestvideo[height>=2160]+bestaudio/"
     "bestvideo[height>=1440][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
     "bestvideo[height>=1440]+bestaudio/"
-    "bestvideo[height>=1080]+bestaudio/best"
+    "bestvideo[height>=1080]+bestaudio"
+    + _TAIL
 )
 _HD = (
     "bestvideo[height>=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
     "bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/"
     "bestvideo[height>=1080]+bestaudio/"
-    "bestvideo[height>=720]+bestaudio/best"
+    "bestvideo[height>=720]+bestaudio"
+    + _TAIL
 )
 
 FMTS = {
-    "4k":      {"label":"4K (2160p)",   "fmt":_4K, "merge":"mp4", "fb":"best", "pp_compat":True},
+    "4k":      {"label":"4K / 8K (max)", "fmt":_4K, "merge":"mp4", "fb":"best", "pp_compat":True},
     "hd":      {"label":"HD (1080p)",   "fmt":_HD, "merge":"mp4", "fb":"best", "pp_compat":True},
     # Audio only
     "mp3":     {"label":"Audio MP3",    "fmt":"ba/b", "audio":"mp3"},
@@ -564,10 +583,12 @@ class Bridge(BaseHTTPRequestHandler):
         except: d={}
         url     = (d.get("url")     or "").strip()
         referer = (d.get("referer") or "").strip()
+        fmt     = (d.get("fmt")     or "").strip()   # optional quality from the video overlay
+        title   = (d.get("title")   or "").strip()   # page title — names sniffed raw streams
         if not url:
             self.send_response(400); self._c(); self.end_headers()
             self.wfile.write(b'{"ok":false}'); return
-        self.app._mq.put(("ext_url", (url, referer)))
+        self.app._mq.put(("ext_url", (url, referer, fmt, title)))
         self.send_response(200); self._c()
         self.send_header("Content-Type","application/json"); self.end_headers()
         self.wfile.write(b'{"ok":true}')
@@ -610,12 +631,20 @@ class App:
         self._sched_time  = None
         self._sched_timer = None
         self._referers    = {}
+        self._ext_titles  = {}   # url -> page title hint from the browser extension
         self.ff           = find_ff()
         self._row_widgets = {}   # item.id -> dict of widget refs
 
         root.title(f"{APP_NAME} v{APP_VER}")
-        root.geometry("1100x800")
-        root.minsize(900,640)
+        # Bump Tk font scaling ~25% — on a retina display Tk renders true point sizes, which looked
+        # small next to the old non-retina build. Multiply the current scaling so it stays sensible
+        # on both retina and non-retina screens.
+        try:
+            _sc = float(root.tk.call("tk", "scaling"))
+            root.tk.call("tk", "scaling", _sc * 1.25)
+        except Exception: pass
+        root.geometry("1200x860")
+        root.minsize(940,660)
         root.configure(bg=T["BG"])
         # Center on screen
         root.update_idletasks()
@@ -630,6 +659,7 @@ class App:
         self._poll_clip()
         self._start_bridge()
         self._check_resume()
+        self.root.after(600, self._restore_basket_if_on)
         self._setup_tray()
         # Background update check (10s after startup, once per session)
         root.after(10000, self._check_for_updates_async)
@@ -720,7 +750,7 @@ class App:
         tx = tk.Frame(hi, bg=T["HEADER"]); tx.pack(side="left")
         tk.Label(tx, text=APP_NAME, bg=T["HEADER"], fg=T["ACCENT"],
                  font=("Helvetica",15,"bold")).pack(anchor="w")
-        tk.Label(tx, text=f"v{APP_VER}  ·  Licensed to ZH Motions Students",
+        tk.Label(tx, text=f"v{APP_VER}  ·  by ZH Motions",
                  bg=T["HEADER"], fg=T["MUTED"], font=("Helvetica",9)).pack(anchor="w")
         # Right side info pills
         right = tk.Frame(hi, bg=T["HEADER"]); right.pack(side="right")
@@ -865,6 +895,10 @@ class App:
         self.btn_cancel.pack(side="left")
         ttk.Button(btns, text="Grab from page", style="Ghost.TButton",
                    command=self._site_grab_dialog).pack(side="left", padx=(14,0))
+        ttk.Button(btns, text="◎ Basket", style="Ghost.TButton",
+                   command=self._toggle_basket).pack(side="left", padx=(6,0))
+        ttk.Button(btns, text="🧩 Extension", style="Ghost.TButton",
+                   command=self._ext_dialog).pack(side="left", padx=(6,0))
         self._ghost_btn(btns, "Clear Log",   self._clear_log).pack(side="right")
         self._ghost_btn(btns, "Clear Queue", self._clear_queue).pack(side="right", padx=(0,6))
 
@@ -1610,8 +1644,22 @@ class App:
 
     def _recv_ext(self, payload):
         """Background receive — no window jump, no bell."""
-        url, referer = payload if isinstance(payload, tuple) else (payload, "")
+        fmt = ""; title = ""
+        if isinstance(payload, tuple):
+            if   len(payload) == 4: url, referer, fmt, title = payload
+            elif len(payload) == 3: url, referer, fmt = payload
+            else: url, referer = payload
+        else:
+            url, referer = payload, ""
+        self._ext_seen = True
+        if fmt in FMTS:
+            # The video overlay chose a quality — apply it before this download starts.
+            self.fmt_var.set(f"{fmt}: {FMTS[fmt]['label']}")
+            self.log(f"[bridge] quality: {FMTS[fmt]['label']}")
         if referer: self._referers[url] = referer
+        # Page title from the extension — used to name sniffed raw streams
+        # (Artlist/Pinterest m3u8) that carry no metadata title of their own.
+        if title: self._ext_titles[url] = title
         self.log(f"[bridge] {url[:80]}")
         if self._is_running() and getattr(self, "_sem", None) is not None:
             # Live-enqueue into the running pool. Do NOT also add to url_box —
@@ -1631,6 +1679,11 @@ class App:
             self._start()
 
     # -- resume -------------------------------------------------------------
+    def _restore_basket_if_on(self):
+        if self.cfg.get("basket"):
+            try: self._make_basket()
+            except Exception: pass
+
     def _check_resume(self):
         q = self.state.get("queue",[])
         if q:
@@ -1702,9 +1755,227 @@ class App:
             self._sched_timer = self.root.after(1000,
                 lambda: self._countdown_tick(target_time, urls, out, fk))
 
+
+    # ── Browser extension helper ─────────────────────────────────────────
+    def _ext_dialog(self):
+        w = tk.Toplevel(self.root); w.title("Browser integration")
+        w.configure(bg=T["BG"]); w.geometry("520x300"); w.transient(self.root)
+        tk.Label(w, text="🧩 Browser extension", bg=T["BG"], fg=T["FG"],
+                 font=("Helvetica", 14, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
+        tk.Label(w, text=("The extension adds the ⬇ Download button on top of videos\n"
+                          "(IDM style) and catches downloads from the browser."),
+                 bg=T["BG"], fg=T["MUTED"], justify="left",
+                 font=("Helvetica", 11)).pack(anchor="w", padx=16)
+        stat = "✅ Connected" if getattr(self, "_ext_seen", False) else "○ Not detected yet"
+        tk.Label(w, text=f"Status: {stat}", bg=T["BG"],
+                 fg=T["GREEN"] if getattr(self, "_ext_seen", False) else T["MUTED"],
+                 font=("Helvetica", 11, "bold")).pack(anchor="w", padx=16, pady=(8, 2))
+        fr = tk.Frame(w, bg=T["BG"]); fr.pack(fill="x", padx=16, pady=(10, 4))
+        def open_store():
+            webbrowser.open(EXT_STORE_URL or "https://zhmotions.com/downloader#extension")
+        ttk.Button(fr, text="Install from Chrome Web Store", style="Main.TButton",
+                   command=open_store).pack(side="left")
+        def open_manual():
+            webbrowser.open("chrome://extensions") if False else webbrowser.open("https://zhmotions.com/downloader#extension")
+        tk.Label(w, text=("Manual install (any Chromium browser):\n"
+                          "1. Open chrome://extensions   2. Turn on Developer mode\n"
+                          "3. \u201cLoad unpacked\u201d \u2192 pick the app\u2019s \u2018extension\u2019 folder"),
+                 bg=T["BG"], fg=T["MUTED"], justify="left",
+                 font=("Menlo", 10)).pack(anchor="w", padx=16, pady=(12, 0))
+        ttk.Button(w, text="Close", style="Ghost.TButton", command=w.destroy).pack(anchor="e", padx=16, pady=12)
+
+    # ── Playlist picker (choose items before downloading) ───────────────
+    def _looks_playlist(self, url):
+        u = url.lower()
+        return any(k in u for k in ("list=", "/playlist", "/channel/", "/@", "/user/",
+                                    "/c/", "/sets/", "/album/"))
+
+    def _playlist_flow(self, url, out, fk):
+        """Probe playlist entries in a worker thread, then open the picker dialog."""
+        self.log("[playlist] Reading playlist…")
+        self.btn_dl.configure(state="disabled", text="Reading…")
+        def probe():
+            entries = []
+            try:
+                with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
+                                       "extract_flat": "in_playlist", "skip_download": True}) as y:
+                    info = y.extract_info(url, download=False)
+                for e in (info.get("entries") or []):
+                    if not e: continue
+                    u = e.get("url") or e.get("webpage_url") or ""
+                    if u and not u.startswith("http"):
+                        u = f"https://www.youtube.com/watch?v={u}"
+                    dur = e.get("duration")
+                    entries.append({"title": e.get("title") or u, "url": u,
+                                    "dur": f"{int(dur//60)}:{int(dur%60):02d}" if dur else ""})
+            except Exception as ex:
+                self.log(f"[playlist] probe failed: {ex}", "warn")
+            def done():
+                self.btn_dl.configure(state="normal", text="↓ Download")
+                if not entries:
+                    # not really a playlist (or probe failed) → normal single download
+                    self._do_start([url], out, fk)
+                else:
+                    self._playlist_picker(entries, out, fk)
+            self.root.after(0, done)
+        threading.Thread(target=probe, daemon=True).start()
+
+    def _playlist_picker(self, entries, out, fk):
+        w = tk.Toplevel(self.root); w.title(f"Playlist — {len(entries)} items")
+        w.configure(bg=T["BG"]); w.geometry("620x520"); w.transient(self.root)
+        tk.Label(w, text=f"Select what to download ({len(entries)} items found)",
+                 bg=T["BG"], fg=T["FG"], font=("Helvetica", 13, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
+        # scrollable checkbox list
+        body = tk.Frame(w, bg=T["BG"]); body.pack(fill="both", expand=True, padx=14)
+        cv = tk.Canvas(body, bg=T["BG"], highlightthickness=0)
+        sb = ttk.Scrollbar(body, orient="vertical", command=cv.yview)
+        cv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y"); cv.pack(side="left", fill="both", expand=True)
+        inner = tk.Frame(cv, bg=T["BG"])
+        win = cv.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: cv.configure(scrollregion=cv.bbox("all")))
+        cv.bind("<Configure>", lambda e: cv.itemconfig(win, width=e.width))
+        vars_ = []
+        for i, e in enumerate(entries):
+            v = tk.BooleanVar(value=True); vars_.append(v)
+            row = tk.Frame(inner, bg=T["BG"]); row.pack(fill="x", pady=1)
+            ttk.Checkbutton(row, variable=v).pack(side="left")
+            t = e["title"] if len(e["title"]) <= 68 else e["title"][:65] + "…"
+            tk.Label(row, text=f"{i+1:>3}. {t}", bg=T["BG"], fg=T["FG"], anchor="w",
+                     font=("Helvetica", 11)).pack(side="left", fill="x", expand=True)
+            if e["dur"]:
+                tk.Label(row, text=e["dur"], bg=T["BG"], fg=T["MUTED"],
+                         font=("Menlo", 10)).pack(side="right", padx=(0, 6))
+        # footer: select all/none, count, quality, download
+        foot = tk.Frame(w, bg=T["BG"]); foot.pack(fill="x", padx=14, pady=10)
+        cnt = tk.Label(foot, text="", bg=T["BG"], fg=T["ACCENT"], font=("Helvetica", 10, "bold"))
+        def refresh_cnt(*_):
+            cnt.config(text=f"{sum(v.get() for v in vars_)} selected")
+        for v in vars_: v.trace_add("write", refresh_cnt)
+        refresh_cnt()
+        def set_all(val):
+            for v in vars_: v.set(val)
+        ttk.Button(foot, text="All", style="Ghost.TButton", command=lambda: set_all(True)).pack(side="left")
+        ttk.Button(foot, text="None", style="Ghost.TButton", command=lambda: set_all(False)).pack(side="left", padx=(6, 10))
+        cnt.pack(side="left")
+        qv = tk.StringVar(value=f"{fk}: {FMTS[fk]['label']}")
+        qm = tk.OptionMenu(foot, qv, *[f"{k}: {v['label']}" for k, v in FMTS.items()])
+        self._style_menu(qm); qm.pack(side="left", padx=(14, 0))
+        def go():
+            picked = [e["url"] for e, v in zip(entries, vars_) if v.get() and e["url"]]
+            if not picked:
+                messagebox.showwarning(APP_NAME, "Nothing selected."); return
+            kf = qv.get().split(":")[0].strip()
+            if kf not in FMTS: kf = fk
+            if not self.is_pro() and len(picked) > 1:
+                self.log(f"[pro] Batch is a Pro feature — downloading 1 of {len(picked)}. ⭐ Upgrade for batch.")
+                picked = picked[:1]
+            if not self.is_pro() and kf == "4k":
+                kf = "hd"; self.log("[pro] 4K is a Pro feature — using 1080p.")
+            self.pl_var.set(False)   # entries are direct video URLs — stop re-expansion
+            self.url_box.delete("1.0", "end"); self.url_box.insert("1.0", "\n".join(picked))
+            w.destroy()
+            self._do_start(picked, out, kf)
+        ttk.Button(foot, text="↓ Download selected", style="Main.TButton", command=go).pack(side="right")
+
+    # ── Floating drop basket (IDM-style drop target) ─────────────────────
+    def _toggle_basket(self):
+        if getattr(self, "_basket", None) and self._basket.winfo_exists():
+            self._basket.destroy(); self._basket = None
+            self.cfg["basket"] = False
+        else:
+            self._make_basket()
+            self.cfg["basket"] = True
+        jsave(CFG_PATH, self.cfg)
+
+    def _make_basket(self):
+        b = tk.Toplevel(self.root)
+        b.overrideredirect(True)
+        b.attributes("-topmost", True)
+        try: b.attributes("-alpha", 0.92)
+        except Exception: pass
+        sw = b.winfo_screenwidth()
+        x, y = self.cfg.get("basket_xy", [sw - 130, 90])
+        b.geometry(f"74x74+{int(x)}+{int(y)}")
+        b.configure(bg=T["ACCENT"])
+        lbl = tk.Label(b, text="⬇", bg=T["ACCENT"], fg="#0a0606", font=("Helvetica", 30, "bold"))
+        lbl.pack(fill="both", expand=True)
+        # drag to move
+        def press(e): b._off = (e.x, e.y)
+        def move(e):
+            ox, oy = getattr(b, "_off", (37, 37))
+            nx, ny = e.x_root - ox, e.y_root - oy
+            b.geometry(f"+{nx}+{ny}")
+        def release(_e):
+            try:
+                geo = b.geometry().split("+")
+                self.cfg["basket_xy"] = [int(geo[1]), int(geo[2])]; jsave(CFG_PATH, self.cfg)
+            except Exception: pass
+        for wdg in (b, lbl):
+            wdg.bind("<ButtonPress-1>", press); wdg.bind("<B1-Motion>", move)
+            wdg.bind("<ButtonRelease-1>", release)
+            wdg.bind("<Double-Button-1>", lambda e: self._restore_window())
+            wdg.bind("<Button-3>", lambda e: self._toggle_basket())
+            wdg.bind("<Button-2>", lambda e: self._toggle_basket())
+        # accept dropped links
+        if HAS_DND:
+            try:
+                lbl.drop_target_register(DND_TEXT)
+                lbl.dnd_bind("<<Drop>>", self._basket_drop)
+            except Exception as e:
+                self.log(f"[basket] dnd unavailable: {e}", "warn")
+        self._basket = b
+
+    def _basket_drop(self, event):
+        raw = (event.data or "").replace("{", " ").replace("}", " ")
+        urls = [u for u in URL_RE.findall(raw) if not u.startswith(("blob:", "data:"))]
+        if not urls:
+            self.log("[basket] no URL in drop", "warn"); return
+        self._quick_add(urls)
+
+    # ── IDM-style quick-add popup ────────────────────────────────────────
+    def _quick_add(self, urls):
+        w = tk.Toplevel(self.root); w.title("Add download")
+        w.configure(bg=T["BG"]); w.attributes("-topmost", True)
+        w.geometry("460x210")
+        first = urls[0] if urls else ""
+        show = first if len(first) <= 52 else first[:49] + "…"
+        extra = f"  (+{len(urls)-1} more)" if len(urls) > 1 else ""
+        tk.Label(w, text="New download", bg=T["BG"], fg=T["FG"],
+                 font=("Helvetica", 13, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
+        tk.Label(w, text=show + extra, bg=T["BG"], fg=T["MUTED"],
+                 font=("Menlo", 10)).pack(anchor="w", padx=16)
+        row = tk.Frame(w, bg=T["BG"]); row.pack(fill="x", padx=16, pady=(12, 4))
+        self._lbl(row, "Quality").pack(side="left", padx=(0, 6))
+        cur = self.fmt_var.get().split(":")[0].strip()
+        if cur not in FMTS: cur = "hd"
+        qv = tk.StringVar(value=f"{cur}: {FMTS[cur]['label']}")
+        qm = tk.OptionMenu(row, qv, *[f"{k}: {v['label']}" for k, v in FMTS.items()])
+        self._style_menu(qm); qm.configure(width=18); qm.pack(side="left")
+        sv = tk.BooleanVar(value=self.sub_var.get())
+        ttk.Checkbutton(row, text="Subtitles", variable=sv).pack(side="left", padx=(14, 0))
+        btns = tk.Frame(w, bg=T["BG"]); btns.pack(fill="x", padx=16, pady=(14, 12))
+        def apply_common():
+            self.fmt_var.set(qv.get()); self.sub_var.set(sv.get())
+            cur_txt = self.url_box.get("1.0", "end").strip()
+            merged = (cur_txt + "\n" if cur_txt else "") + "\n".join(urls)
+            self.url_box.delete("1.0", "end"); self.url_box.insert("1.0", merged)
+        def dl_now():
+            apply_common(); w.destroy()
+            self._restore_window()
+            self._start()
+        def queue_only():
+            apply_common(); w.destroy()
+            self.log(f"[basket] {len(urls)} URL(s) added to the box — press Download when ready.")
+        ttk.Button(btns, text="↓ Download now", style="Main.TButton", command=dl_now).pack(side="left")
+        ttk.Button(btns, text="Add only", style="Ghost.TButton", command=queue_only).pack(side="left", padx=(8, 0))
+        ttk.Button(btns, text="Cancel", style="Ghost.TButton", command=w.destroy).pack(side="right")
+
     # ── Licensing (Free + Pro) ──────────────────────────────────────────
     def is_pro(self):
-        return bool(self.lic.get("valid")) and self.lic.get("plan") == "pro"
+        # License is now PUBLIC/free — 4K, batch, playlists and scheduler are
+        # unlocked for everyone. (Was: valid key + plan=="pro".)
+        return True
 
     def _load_license(self):
         try:
@@ -1839,6 +2110,12 @@ class App:
         self.cfg.update({"dir":out,"fmt":fk,"cookies":self.ck_var.get(),
                          "clip":self._clip_on.get()})
         jsave(CFG_PATH,self.cfg)
+
+        # Playlist PICKER: one playlist URL + "Full Playlist" on → choose items instead of
+        # blindly downloading everything (IDM/4K-Downloader style).
+        if len(urls) == 1 and self.pl_var.get() and self._looks_playlist(urls[0]):
+            self._playlist_flow(urls[0], out, fk)
+            return
 
         delay = self._get_sched_delay()
         if (not self.is_pro()) and delay and delay > 0:
@@ -2623,8 +2900,13 @@ class App:
             parsed = _up.urlparse(url)
             qs = _up.parse_qs(parsed.query)
             title_q = qs.get("title", qs.get("name", qs.get("filename", [])))
-            # Priority: query string title > referer slug > URL slug
-            if title_q:
+            # Priority: extension page-title hint > query-string title > referer
+            # slug > URL slug. The extension hint is best for sniffed raw streams
+            # (Artlist/Pinterest m3u8) whose URL/referer have no readable name.
+            ext_title = self._ext_titles.get(url) or self._ext_titles.get(getattr(item, "url", ""), "")
+            if ext_title:
+                new_name = ext_title
+            elif title_q:
                 new_name = title_q[0]
             elif slug_pool:
                 new_name = max(slug_pool, key=lambda s: (len(s.replace("-"," ").split()), len(s)))
@@ -3016,6 +3298,26 @@ class App:
         threading.Thread(target=self._update_app_check, daemon=True).start()
         threading.Thread(target=self._update_ytdlp_silent, daemon=True).start()
 
+    def _http_get(self, url, accept="*/*"):
+        """GET a URL, returning bytes. Tries curl FIRST.
+
+        Hostinger's lsrecaptcha firewall 403s Python's urllib TLS fingerprint
+        (any User-Agent) but lets curl through. curl ships on macOS and on
+        Windows 10 1803+, so it's the reliable path. urllib is the fallback for
+        hosts where curl is missing (rare) or not firewalled (e.g. GitHub).
+        """
+        try:
+            p = subprocess.run(
+                ["curl", "-fsSL", "-m", "12", "-A", _UA, "-H", f"Accept: {accept}", url],
+                capture_output=True, **_SUBPROCESS_HIDE)
+            if p.returncode == 0 and p.stdout.strip():
+                return p.stdout
+        except Exception:
+            pass
+        req = urllib.request.Request(url, headers={"Accept": accept, "User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as r:
+            return r.read()
+
     def _update_app_check(self):
         """Check new release. Tries zhmotions.com FIRST (custom server), GitHub as fallback.
 
@@ -3025,22 +3327,32 @@ class App:
           {"version": "6.3.6", "download_url": "https://.../ZHDownloader.zip",
            "notes": "release notes here"}
         """
+        # Fetch through the Cloudflare Worker relay, NOT zhmotions.com directly.
+        # Hostinger's lsrecaptcha firewall intermittently 403s any direct fetch of
+        # version.json (blocks Python's urllib TLS fingerprint AND challenges curl).
+        # The relay (a Cloudflare Worker) forwards /api.php to the origin server-
+        # side, so it never trips the firewall. api.php?action=app_version reads
+        # the same zhdownloader/version.json → one source of truth.
+        # The old direct "zhmotions.com/zhdownloader/version.json" and shop-html
+        # scrape were dropped — both 403 on every launch.
         sources = [
-            ("shop-html", "https://zhmotions.com/shop?p=3", self._parse_zhm_shop_html, "text/html"),
-            ("zhm-json",  "https://www.zhmotions.com/zhdownloader/version.json", self._parse_zhm_json, "application/json"),
-            ("github",    "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest", self._parse_gh_json, "application/json"),
+            ("relay-json", "https://api-relay-2.zhmotionspanel.workers.dev/api.php?action=app_version&app=zhdownloader", self._parse_zhm_json, "application/json"),
+            ("github",     "https://api.github.com/repos/zhmotions/zhmotionsdownloader/releases/latest", self._parse_gh_json, "application/json"),
         ]
         for name, url, parser, accept in sources:
             try:
-                req = urllib.request.Request(url, headers={
-                    "Accept": accept,
-                    "User-Agent": f"ZHDownloader/{APP_VER}"})
-                with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as r:
-                    body = r.read()
+                body = self._http_get(url, accept)
                 if accept.startswith("application/json"):
-                    data = json.loads(body)
+                    txt = (body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body)).strip()
+                    # Old api.php (no app_version action) answers "ok" for unknown
+                    # actions; GitHub rate-limit returns an error page. Neither is
+                    # JSON — skip quietly instead of dumping a parse traceback.
+                    if not txt or txt[0] not in "{[":
+                        self.log(f"[update] {name}: no update info (skipped)")
+                        continue
+                    data = json.loads(txt)
                 else:
-                    data = body.decode("utf-8", "ignore")
+                    data = body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body)
                 latest, html_url, notes = parser(data)
                 if not latest:
                     self.log(f"[update] {name}: empty version field")
@@ -3054,8 +3366,8 @@ class App:
                 return
             except Exception as e:
                 self.log(f"[update] {name} check failed: {e}")
-        # All sources failed
-        self.log("[update] all sources unreachable")
+        # No source had newer version info — normal, not an error.
+        self.log("[update] no update info available (you're likely on the latest)")
 
     def _parse_zhm_shop_html(self, html):
         """Scrape product page HTML for version + download URL.
@@ -3189,9 +3501,9 @@ class App:
         # Branding box
         box = tk.Frame(d, bg=T["SURF"], padx=20, pady=14)
         box.pack(fill="x", padx=24, pady=8)
-        tk.Label(box, text="🎓  Licensed to ZH Motions Students",
+        tk.Label(box, text="ZH Downloader — by ZH Motions",
                  bg=T["SURF"], fg=T["ACCENT"], font=("Helvetica",11,"bold")).pack(anchor="w")
-        tk.Label(box, text="Internal use only — do not redistribute outside the program.",
+        tk.Label(box, text="Free desktop app. Only download content you own or are permitted to download.",
                  bg=T["SURF"], fg=T["MUTED"], font=("Helvetica",9), wraplength=360,
                  justify="left").pack(anchor="w", pady=(4,0))
 

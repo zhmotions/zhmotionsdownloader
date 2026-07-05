@@ -621,3 +621,169 @@
   }, true);
 
 })();
+
+
+// ── IDM-style video overlay ─────────────────────────────────────────────
+// Hover any playing <video> → a "⬇ Download ▾" pill floats at its top-right.
+// Click = send page URL (video sites need yt-dlp on the PAGE url, not the blob).
+// ▾ = quality menu (4K / 1080p / MP3). Sent to the app bridge with a fmt hint.
+(function () {
+  if (window.top !== window.self) return;           // main frame only
+  var PILL_ID = "__zhvid_pill";
+  var MENU_ID = "__zhvid_menu";
+  var css = document.createElement("style");
+  css.textContent =
+    "#" + PILL_ID + "{position:fixed!important;z-index:2147483647!important;display:none;" +
+    "align-items:center;gap:0;background:#d4a017!important;color:#0a0606!important;" +
+    "border-radius:8px!important;font:600 12px -apple-system,sans-serif!important;" +
+    "box-shadow:0 2px 10px rgba(0,0,0,.45)!important;overflow:hidden!important;cursor:pointer!important;}" +
+    "#" + PILL_ID + " .zhp_main{padding:7px 10px!important;white-space:nowrap!important;}" +
+    "#" + PILL_ID + " .zhp_more{padding:7px 8px!important;border-left:1px solid rgba(0,0,0,.25)!important;}" +
+    "#" + PILL_ID + " .zhp_main:hover,#" + PILL_ID + " .zhp_more:hover{background:#e8b52e!important;}" +
+    "#" + MENU_ID + "{position:fixed!important;z-index:2147483647!important;display:none;" +
+    "background:#1c1520!important;border:1px solid #3a3340!important;border-radius:8px!important;" +
+    "box-shadow:0 4px 18px rgba(0,0,0,.5)!important;overflow:hidden!important;min-width:150px!important;}" +
+    "#" + MENU_ID + " div{padding:8px 14px!important;color:#eee!important;" +
+    "font:500 12px -apple-system,sans-serif!important;cursor:pointer!important;}" +
+    "#" + MENU_ID + " div:hover{background:#d4a017!important;color:#0a0606!important;}";
+  document.documentElement.appendChild(css);
+
+  var pill = document.createElement("div");
+  pill.id = PILL_ID;
+  pill.innerHTML = '<span class="zhp_main">⬇ Download</span><span class="zhp_more">▾</span>';
+  document.documentElement.appendChild(pill);
+
+  var menu = document.createElement("div");
+  menu.id = MENU_ID;
+  var OPTS = [["4k", "4K (2160p)"], ["hd", "HD (1080p)"], ["mp3", "Audio MP3"]];
+  OPTS.forEach(function (o) {
+    var d = document.createElement("div");
+    d.textContent = o[1];
+    d.addEventListener("click", function (e) {
+      e.stopPropagation(); hideMenu(); sendCurrent(o[0]);
+    });
+    menu.appendChild(d);
+  });
+  document.documentElement.appendChild(menu);
+
+  var curVid = null, hideT = null;
+
+  function videoUrlFor(v) {
+    var s = (v.currentSrc || v.src || "");
+    // blob/MSE (YouTube, FB, most sites) → the PAGE url is what yt-dlp needs
+    if (!s || s.indexOf("blob:") === 0 || s.indexOf("data:") === 0) return location.href;
+    return s.indexOf("http") === 0 ? location.href : location.href;   // page URL is the reliable choice everywhere
+  }
+
+  function markSent() {
+    pill.querySelector(".zhp_main").textContent = "\u2713 Sent";
+    setTimeout(function () { pill.querySelector(".zhp_main").textContent = "\u2b07 Download"; hidePill(); }, 1200);
+  }
+  function pickSniffed(items) {
+    // Prefer a real stream the extension sniffed from network (Artlist/Artgrid/HLS/mp4) —
+    // this is how IDM catches sites where the <video> is a blob. Fall back to page URL.
+    if (!items || !items.length) return null;
+    var score = function (it) {
+      var u = (it.url || "").toLowerCase(), t = (it.type || "").toLowerCase();
+      // HLS master playlist beats a variant playlist: the master holds ALL
+      // renditions so the app can pick the highest (HD/4K/8K); a variant with a
+      // res/bitrate token is a single quality — often the low autoplay preview.
+      var isHls = u.indexOf(".m3u8") >= 0 || t === "hls";
+      if (isHls && /(master|playlist|index)\.m3u8/.test(u)) return 6;
+      if (isHls && !/(\d{3,4}p|\/(360|480|540|720|1080|1440|2160)\/|_(360|480|540|720)_)/.test(u)) return 5;
+      if (isHls) return 4;
+      if (u.indexOf(".mpd") >= 0) return 3;
+      if (/\.(mp4|mkv|mov|webm|m4v)(\?|$)/.test(u)) return 2;
+      if (/\.(mp3|m4a|aac|wav|flac)(\?|$)/.test(u)) return 1;
+      return 0;
+    };
+    var best = null, bs = 0;
+    items.forEach(function (it) { var s = score(it); if (s > bs) { bs = s; best = it; } });
+    return bs > 0 ? best : null;
+  }
+  // Page title, minus the trailing " - YouTube" / " | Pinterest" site suffix —
+  // names sniffed raw streams (Artlist/Pinterest m3u8) that have no metadata title.
+  function cleanTitle() {
+    try {
+      var t = (document.title || "").trim();
+      t = t.replace(/\s*[-|–—•·]\s*(YouTube|Pinterest|Artlist|Artgrid|Vimeo|Facebook|Instagram|TikTok|X|Twitter|Dailymotion)\b.*$/i, "");
+      return t.replace(/\s+/g, " ").trim().slice(0, 80);
+    } catch (e) { return ""; }
+  }
+  // After the extension is reloaded/updated, an already-injected content script
+  // is orphaned: every chrome.* call throws. Detect it and tell the user to
+  // refresh instead of silently doing nothing.
+  function extAlive() {
+    try { return !!(chrome && chrome.runtime && chrome.runtime.id); }
+    catch (e) { return false; }
+  }
+  function sendCurrent(fmt) {
+    if (!curVid) return;
+    if (!extAlive()) {
+      alert("ZH Downloader was updated — refresh this page (Cmd+R) once, then click Download again.");
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ type: "ZH_GET_TAB" }, function (resp) {
+        var sn = pickSniffed(resp && resp.items);
+        var url = sn ? sn.url : videoUrlFor(curVid);
+        var ref = location.href;
+        chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: url, referer: ref, fmt: fmt || "", title: cleanTitle() });
+        markSent();
+      });
+    } catch (e) {
+      try { chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: videoUrlFor(curVid), referer: location.href, fmt: fmt || "", title: cleanTitle() }); markSent(); } catch (e2) {}
+    }
+  }
+
+  function placePill(v) {
+    var r = v.getBoundingClientRect();
+    if (r.width < 220 || r.height < 120) { hidePill(); return; }   // skip thumbnails/tiny players
+    pill.style.display = "flex";
+    var top = Math.max(8, r.top + 10);
+    var left = Math.min(window.innerWidth - pill.offsetWidth - 8, r.right - pill.offsetWidth - 10);
+    pill.style.top = top + "px";
+    pill.style.left = Math.max(8, left) + "px";
+  }
+
+  function hidePill() { pill.style.display = "none"; hideMenu(); }
+  function hideMenu() { menu.style.display = "none"; }
+
+  function schedHide() {
+    clearTimeout(hideT);
+    hideT = setTimeout(function () {
+      if (!pill.matches(":hover") && !menu.matches(":hover") &&
+          !(curVid && curVid.matches && curVid.matches(":hover"))) hidePill();
+    }, 600);
+  }
+
+  document.addEventListener("mouseover", function (e) {
+    var v = e.target && e.target.tagName === "VIDEO" ? e.target :
+            (e.target.querySelector ? null : null);
+    if (!v) {
+      // player containers cover the <video>; find one under the pointer
+      var els = document.elementsFromPoint(e.clientX, e.clientY);
+      for (var i = 0; i < els.length; i++) {
+        if (els[i].tagName === "VIDEO") { v = els[i]; break; }
+      }
+    }
+    if (v) { curVid = v; clearTimeout(hideT); placePill(v); }
+    else if (e.target !== pill && !pill.contains(e.target) &&
+             e.target !== menu && !menu.contains(e.target)) schedHide();
+  }, true);
+
+  window.addEventListener("scroll", function () { if (curVid && pill.style.display !== "none") placePill(curVid); }, true);
+  window.addEventListener("resize", function () { if (curVid && pill.style.display !== "none") placePill(curVid); });
+
+  pill.querySelector(".zhp_main").addEventListener("click", function (e) {
+    e.stopPropagation(); sendCurrent("");            // app's current default quality
+  });
+  pill.querySelector(".zhp_more").addEventListener("click", function (e) {
+    e.stopPropagation();
+    var r = pill.getBoundingClientRect();
+    menu.style.top = (r.bottom + 6) + "px";
+    menu.style.left = Math.max(8, r.right - 150) + "px";
+    menu.style.display = "block";
+  });
+  document.addEventListener("click", function () { hideMenu(); });
+})();

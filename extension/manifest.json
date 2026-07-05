@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ZH Downloader",
-  "version": "6.3.6",
-  "description": "Universal download manager — intercepts downloads, detects media, right-click menu. ZH Motions.",
+  "version": "6.6.2",
+  "description": "Universal download manager \u2014 intercepts downloads, detects media, right-click menu. ZH Motions.",
   "author": "ZH Motions",
   "icons": {
     "16": "icons/icon16.png",
@@ -24,30 +24,39 @@
   },
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_end",
       "all_frames": false
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["icons/*.png"],
-      "matches": ["<all_urls>"]
+      "resources": [
+        "icons/*.png"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "permissions": [
+    "scripting",
     "webRequest",
     "storage",
     "downloads",
-    "activeTab",
     "tabs",
-    "scripting",
     "notifications",
     "webNavigation",
-    "contextMenus",
-    "declarativeNetRequest"
+    "contextMenus"
   ],
-  "host_permissions": ["<all_urls>", "http://127.0.0.1:9613/*"],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:9613/*"
+  ],
   "minimum_chrome_version": "100"
 }

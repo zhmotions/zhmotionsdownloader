@@ -180,8 +180,26 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
 // When the browser/extension wakes, push any downloads queued while the app was closed.
 chrome.runtime.onStartup.addListener(() => { try { flushWhenReady(); } catch {} });
 
+// Re-inject the content script into every already-open tab whenever the
+// extension is installed/updated/reloaded. Chrome does NOT do this automatically
+// — without it, tabs opened before a reload run a dead ("orphaned") script and
+// the Download button silently does nothing until you refresh. This removes that
+// manual-refresh step. content.js guards with window.__zhLoaded so re-injecting
+// into a fresh tab is a harmless no-op.
+function reinjectAllTabs() {
+  try {
+    chrome.tabs.query({}, (tabs) => {
+      for (const t of (tabs || [])) {
+        if (!t.id || !t.url || !/^https?:/i.test(t.url)) continue;
+        chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }).catch(() => {});
+      }
+    });
+  } catch (e) {}
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   try { flushWhenReady(); } catch {}
+  try { reinjectAllTabs(); } catch {}
   // Main download option
   chrome.contextMenus.create({
     id:       "zh-download-link",
@@ -275,7 +293,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "ZH_SEND_TO_APP") {
-    sendToApp(msg.url, msg.referer).then(r => sendResponse(r));
+    sendToApp(msg.url, msg.referer, msg.fmt, msg.title).then(r => sendResponse(r));
     return true;
   }
 
@@ -305,18 +323,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ── Send to desktop app ────────────────────────────────────────────────────
-async function postToApp(url, referer) {
+async function postToApp(url, referer, fmt, title) {
   const r = await fetch("http://127.0.0.1:9613/download", {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ url, referer: referer||url }),
+    body: JSON.stringify({ url, referer: referer||url, fmt: fmt||"", title: title||"" }),
   });
   return r.json();
 }
 
-async function sendToApp(url, referer) {
+async function sendToApp(url, referer, fmt, title) {
   try {
-    const d = await postToApp(url, referer);
+    const d = await postToApp(url, referer, fmt, title);
     if (d.ok) notify("Sent to ZH Downloader", url.slice(0,60)+"…");
     return d;
   } catch(e) {
