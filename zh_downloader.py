@@ -632,6 +632,7 @@ class App:
         self._sched_timer = None
         self._referers    = {}
         self._ext_titles  = {}   # url -> page title hint from the browser extension
+        self._recent_sends = {}  # dedup-key -> ts of last bridge send (repeat-click guard)
         self.ff           = find_ff()
         self._row_widgets = {}   # item.id -> dict of widget refs
 
@@ -1663,6 +1664,18 @@ class App:
                 return
         except Exception:
             pass
+        # Repeat-send guard. Dedup by URL WITHOUT the query string: Artgrid/CDN
+        # stream URLs carry signed tokens that change between sniffs, so the
+        # exact-URL check saw "new" URLs and the same clip downloaded again and
+        # again — piling up "name (1).mp4 / (2).mp4". Also swallows double-clicks
+        # and re-clicks right after a finished run (90s window).
+        key = url.split("?", 1)[0].split("#", 1)[0]
+        now = time.time()
+        self._recent_sends = {k: t for k, t in self._recent_sends.items() if now - t < 90}
+        if key in self._recent_sends:
+            self.log("[bridge] same video sent moments ago — skipped (wait 90s to re-download)")
+            return
+        self._recent_sends[key] = now
         # Quality from the overlay menu is ONE-SHOT: apply for this download,
         # then restore the dropdown. It used to stick — one "Audio MP3" pick and
         # every later plain click quietly downloaded mp3 instead of video.
@@ -2264,7 +2277,10 @@ class App:
 
     def _enqueue_live(self, url, referer=""):
         """Add URL to in-flight queue. Spawns worker that uses existing semaphore pool."""
-        if any(it.url == url for it in self._items): return False
+        # Compare without query/fragment — signed CDN tokens change per sniff,
+        # letting the same stream through the exact-URL check as a "new" item.
+        _k = lambda u: u.split("?", 1)[0].split("#", 1)[0]
+        if any(_k(it.url) == _k(url) for it in self._items): return False
         if referer: self._referers[url] = referer
         idx = len(self._items) + 1
         item = DL(url, idx, idx, self._referers.get(url, ""))
