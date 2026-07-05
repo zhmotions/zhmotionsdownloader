@@ -214,7 +214,7 @@ jobs:
           COMP_DIR=$(mktemp -d)
           # Copy real EULA into installer resources for license screen
           RES_DIR=$(mktemp -d)
-          cp student-pack/LICENSE-STUDENT.txt "$RES_DIR/License.txt"
+          cp EULA.txt "$RES_DIR/License.txt"
           ls -la "$RES_DIR"
           # postinstall strips the quarantine flag so the unsigned app opens WITHOUT
           # the macOS "damaged"/"can't be opened" warning after install.
@@ -225,7 +225,7 @@ jobs:
             --root "$PKG_ROOT" \
             --scripts "$SCR" \
             --identifier "com.zhmotions.downloader" \
-            --version "6.4.1" \
+            --version "6.6.3" \
             --install-location "/" \
             "$COMP_DIR/component.pkg"
           cat > "$COMP_DIR/dist.xml" << 'DISTEOF'

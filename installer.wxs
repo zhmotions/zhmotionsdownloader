@@ -83,6 +83,9 @@
 
     <UIRef Id="WixUI_InstallDir" />
     <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <!-- Real public EULA on the license screen. Without this WiX shows its
+         built-in placeholder "lorem ipsum" license.rtf. -->
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
 
     <Property Id="WixShellExecTarget" Value="[#AppExe]" />
     <CustomAction Id="LaunchApp" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
