@@ -687,9 +687,9 @@
     return location.href;
   }
 
-  function markSent() {
-    pill.querySelector(".zhp_main").textContent = "\u2713 Sent";
-    setTimeout(function () { pill.querySelector(".zhp_main").textContent = "\u2b07 Download"; hidePill(); }, 1200);
+  function markSent(msg) {
+    pill.querySelector(".zhp_main").textContent = msg || "\u2713 Sent";
+    setTimeout(function () { pill.querySelector(".zhp_main").textContent = "\u2b07 Download"; hidePill(); }, 1400);
   }
   function pickSniffed(items) {
     // Prefer a real stream the extension sniffed from network (Artlist/Artgrid/HLS/mp4) —
@@ -740,8 +740,10 @@
         var sn = pickSniffed(resp && resp.items);
         var url = sn ? sn.url : videoUrlFor(curVid);
         var ref = location.href;
-        chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: url, referer: ref, fmt: fmt || "", title: cleanTitle() });
-        markSent();
+        chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: url, referer: ref, fmt: fmt || "", title: cleanTitle() }, function (r) {
+          // Real ACK from the app: duplicate → tell the user instead of a blind "Sent"
+          markSent(r && r.status === "duplicate" ? "✓ Already added" : "✓ Sent");
+        });
       });
     } catch (e) {
       try { chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: videoUrlFor(curVid), referer: location.href, fmt: fmt || "", title: cleanTitle() }); markSent(); } catch (e2) {}

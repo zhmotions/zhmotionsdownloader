@@ -588,10 +588,20 @@ class Bridge(BaseHTTPRequestHandler):
         if not url:
             self.send_response(400); self._c(); self.end_headers()
             self.wfile.write(b'{"ok":false}'); return
+        # Real ACK for the extension: report duplicate vs queued so the pill can
+        # say "Already added" instead of a blind "Sent". (Same tokenless key the
+        # app's dedup uses; read-only peek — _recv_ext still enforces.)
+        status = "queued"
+        try:
+            k = url.split("?", 1)[0].split("#", 1)[0]
+            if (time.time() - self.app._recent_sends.get(k, 0)) < 90:
+                status = "duplicate"
+        except Exception:
+            pass
         self.app._mq.put(("ext_url", (url, referer, fmt, title)))
         self.send_response(200); self._c()
         self.send_header("Content-Type","application/json"); self.end_headers()
-        self.wfile.write(b'{"ok":true}')
+        self.wfile.write(json.dumps({"ok": True, "status": status}).encode())
 
 # -- Main App ---------------------------------------------------------------
 class App:
@@ -627,6 +637,9 @@ class App:
         self._done_files = []
         self._clip_last  = ""
         self._clip_on    = tk.BooleanVar(value=self.cfg.get("clip",True))
+        # Premiere-ready MP4 = transcode to H.264/AAC after download. OFF = keep
+        # the original codec (VP9/AV1 4K finishes instantly — no transcode wait).
+        self._premiere_on = tk.BooleanVar(value=self.cfg.get("premiere",True))
         self._spd_history = []
         self._sched_time  = None
         self._sched_timer = None
@@ -862,7 +875,8 @@ class App:
         self.thumb_var = tk.BooleanVar(value=True)
         self.pl_var    = tk.BooleanVar()
         for v,l in [(self.sub_var,"Subtitles"),(self.thumb_var,"Thumbnail"),
-                    (self.pl_var,"Full Playlist"),(self._clip_on,"Watch clipboard")]:
+                    (self.pl_var,"Full Playlist"),(self._clip_on,"Watch clipboard"),
+                    (self._premiere_on,"Premiere MP4")]:
             ttk.Checkbutton(chk, text=l, variable=v).pack(side="left", padx=(0,16))
 
         # Folder + scheduler row
@@ -2141,7 +2155,8 @@ class App:
                 self.log("[pro] 4K is a Pro feature — using 1080p. ⭐ Upgrade for 4K.")
 
         self.cfg.update({"dir":out,"fmt":fk,"cookies":self.ck_var.get(),
-                         "clip":self._clip_on.get()})
+                         "clip":self._clip_on.get(),
+                         "premiere":self._premiere_on.get()})
         jsave(CFG_PATH,self.cfg)
 
         # Playlist PICKER: one playlist URL + "Full Playlist" on → choose items instead of
@@ -2178,13 +2193,23 @@ class App:
         # Otherwise rebuild from scratch.
         existing_urls = [i.url for i in self._items] if self._items else []
         if existing_urls != urls:
-            self._items = [DL(u,i+1,len(urls), self._referers.get(u,"")) for i,u in enumerate(urls)]
+            # IDM-style persistent queue view: finished rows from the previous
+            # run stay visible (last 20). They're display-only — workers spawn
+            # only for the NEW items (self._run_items).
+            kept = [it for it in self._items if it.status == "done"][-20:]
+            for it in kept: it._prev_run = True
+            new_items = [DL(u, 0, 0, self._referers.get(u,"")) for u in urls]
+            self._items = kept + new_items
+            for i, it in enumerate(self._items, 1):
+                it.idx = i; it.total = len(self._items)
+            self._run_items = new_items
             self._build_rows(self._items)
         else:
             # Reset state on existing items
             for it in self._items:
                 it.status = "waiting"; it.pct = 0; it.speed_v = 0; it.eta_v = None
                 self._mq.put(("item_up", it))
+            self._run_items = list(self._items)
         # URLs are now captured as items — clear the box so a later Start /
         # scheduler / bridge add can't re-download the same links.
         try: self.url_box.delete("1.0", "end")
@@ -2209,7 +2234,7 @@ class App:
         if not self.is_pro(): max_par = 1   # Free = single concurrent; Pro = parallel
         self.cfg["concurrent"] = max_par
         jsave(CFG_PATH, self.cfg)
-        self.log(f"[start] queue={len(self._items)} items, concurrent={max_par}")
+        self.log(f"[start] queue={len(getattr(self,'_run_items',self._items))} new, concurrent={max_par}")
         # Store pool state on self so _recv_ext can live-enqueue mid-run
         self._sem = threading.Semaphore(max_par)
         self._pp_sem = threading.Semaphore(1)   # transcodes one-at-a-time (see _runner)
@@ -2219,7 +2244,7 @@ class App:
         self._active_count = 0
         self._active_lock = threading.Lock()
 
-        for item in self._items:
+        for item in self._run_items:
             t = threading.Thread(target=self._runner, args=(item,), daemon=True)
             self._workers.append(t); t.start()
 
@@ -2727,6 +2752,11 @@ class App:
     def _force_h264_if_needed(self, item):
         """Smart: fast remux if already H.264+AAC, else full re-encode.
         Most YouTube/Artgrid files are already h264 → 5s remux vs minutes transcode."""
+        # "Premiere MP4" toggle OFF = keep the original codec, finish instantly.
+        # (cfg dict read — thread-safe enough; written at Start.)
+        if not self.cfg.get("premiere", True):
+            self.log("[skip] Premiere MP4 off — keeping original codec (no transcode)")
+            return
         try:
             p = Path(item.done_f)
             if not p.exists():
@@ -3066,8 +3096,8 @@ class App:
         self.btn_cancel.configure(state="disabled")
         self.btn_pause.configure(state="disabled")
         self._mq.put(("spd",0))
-        done = sum(1 for it in self._items if it.status=="done")
-        err  = sum(1 for it in self._items if it.status=="error")
+        done = sum(1 for it in self._items if it.status=="done" and not getattr(it,"_prev_run",False))
+        err  = sum(1 for it in self._items if it.status=="error" and not getattr(it,"_prev_run",False))
         msg  = f"Done: {done} file(s) downloaded"
         if err:    msg+=f"  ·  {err} error"
         if self._paused: msg+="  ·  paused"
