@@ -757,7 +757,21 @@
     }, 600);
   }
 
+  // On watch-page-style sites, only offer the pill on an actual video page.
+  // Feed/home pages autoplay hover-PREVIEWS in <video> tags; the pill would
+  // send the HOMEPAGE url and the app would download the wrong thing.
+  function onVideoPage() {
+    var h = location.hostname, p = location.pathname;
+    if (h.includes("youtube.com"))  return p === "/watch" || p.startsWith("/shorts/");
+    if (h.includes("facebook.com")) return /\/(watch|reel|videos)\b/.test(p) || location.search.indexOf("v=") >= 0;
+    if (h.includes("twitter.com") || h === "x.com" || h.endsWith(".x.com")) return p.indexOf("/status/") >= 0;
+    if (h.includes("pinterest."))   return p.indexOf("/pin/") >= 0;
+    if (h.includes("instagram.com")) return /\/(reel|reels|p|tv)\//.test(p);
+    if (h.includes("tiktok.com"))   return p.indexOf("/video/") >= 0 || p.indexOf("/photo/") >= 0;
+    return true;   // other sites: no feed-preview pattern — allow everywhere
+  }
   document.addEventListener("mouseover", function (e) {
+    if (!onVideoPage()) { hidePill(); return; }
     var v = e.target && e.target.tagName === "VIDEO" ? e.target :
             (e.target.querySelector ? null : null);
     if (!v) {

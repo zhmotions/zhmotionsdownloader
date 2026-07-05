@@ -292,6 +292,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     tabState.set(msg.tabId, []); updateBadge(msg.tabId);
   }
 
+  // Popup's Enable/Disable-on-this-site button. Same whitelist the context-menu
+  // toggle uses (whitelist = hosts where ZH is disabled). Was never handled —
+  // the popup button did nothing.
+  if (msg.type === "ZH_SITE_TOGGLE") {
+    chrome.tabs.query({ active:true, currentWindow:true }, tabs => {
+      try {
+        const host = new URL(tabs[0].url).hostname;
+        const idx  = whitelist.indexOf(host);
+        if (idx >= 0) whitelist.splice(idx, 1); else whitelist.push(host);
+        chrome.storage.local.set({ whitelist });
+        sendResponse({ ok:true, disabled: idx < 0 });
+      } catch (e) { sendResponse({ ok:false }); }
+    });
+    return true;
+  }
+
   if (msg.type === "ZH_SEND_TO_APP") {
     sendToApp(msg.url, msg.referer, msg.fmt, msg.title).then(r => sendResponse(r));
     return true;
