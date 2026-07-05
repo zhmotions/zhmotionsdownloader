@@ -669,10 +669,22 @@
   var curVid = null, hideT = null;
 
   function videoUrlFor(v) {
-    var s = (v.currentSrc || v.src || "");
+    // On YouTube search/home/channel pages the page URL is a LIST — yt-dlp
+    // treats it as "playlist: 0 items" and downloads only a thumbnail. The
+    // hovered preview <video> sits inside a renderer that links the real
+    // /watch?v= — walk up and use that. On /watch itself, page URL is right.
+    try {
+      if (location.hostname.includes("youtube.com") && location.pathname !== "/watch" && v) {
+        var el = v;
+        for (var i = 0; el && i < 12; i++) {
+          var a = el.querySelector && el.querySelector('a[href*="/watch?v="], a[href^="/shorts/"]');
+          if (a && a.getAttribute("href")) return new URL(a.getAttribute("href"), location.origin).href;
+          el = el.parentElement;
+        }
+      }
+    } catch (e) {}
     // blob/MSE (YouTube, FB, most sites) → the PAGE url is what yt-dlp needs
-    if (!s || s.indexOf("blob:") === 0 || s.indexOf("data:") === 0) return location.href;
-    return s.indexOf("http") === 0 ? location.href : location.href;   // page URL is the reliable choice everywhere
+    return location.href;
   }
 
   function markSent() {
@@ -775,7 +787,6 @@
     return true;   // other sites: no feed-preview pattern — allow everywhere
   }
   document.addEventListener("mouseover", function (e) {
-    if (!onVideoPage()) { hidePill(); return; }
     var v = e.target && e.target.tagName === "VIDEO" ? e.target :
             (e.target.querySelector ? null : null);
     if (!v) {
@@ -785,6 +796,10 @@
         if (els[i].tagName === "VIDEO") { v = els[i]; break; }
       }
     }
+    // Feed/search pages: only offer the pill when we can resolve the hovered
+    // preview to a real video URL (videoUrlFor walks up to the /watch link) —
+    // otherwise the LIST page url would be sent ("playlist: 0 items" junk).
+    if (!onVideoPage() && !(v && videoUrlFor(v) !== location.href)) { hidePill(); return; }
     if (v) { curVid = v; clearTimeout(hideT); placePill(v); }
     else if (e.target !== pill && !pill.contains(e.target) &&
              e.target !== menu && !menu.contains(e.target)) schedHide();

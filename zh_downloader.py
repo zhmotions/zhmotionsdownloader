@@ -1652,10 +1652,25 @@ class App:
         else:
             url, referer = payload, ""
         self._ext_seen = True
+        # Guard: YouTube LIST pages (search results / home / feeds) aren't videos —
+        # yt-dlp treats them as "playlist: 0 items" and downloads only a thumbnail.
+        try:
+            from urllib.parse import urlparse as _upr
+            _pu = _upr(url)
+            if "youtube.com" in _pu.netloc and \
+               (_pu.path in ("/", "/results") or _pu.path.startswith("/feed")):
+                self.log("[bridge] skipped: that's a YouTube search/home page, not a video — open the video first")
+                return
+        except Exception:
+            pass
+        # Quality from the overlay menu is ONE-SHOT: apply for this download,
+        # then restore the dropdown. It used to stick — one "Audio MP3" pick and
+        # every later plain click quietly downloaded mp3 instead of video.
+        prev_fmt = None
         if fmt in FMTS:
-            # The video overlay chose a quality — apply it before this download starts.
+            prev_fmt = self.fmt_var.get()
             self.fmt_var.set(f"{fmt}: {FMTS[fmt]['label']}")
-            self.log(f"[bridge] quality: {FMTS[fmt]['label']}")
+            self.log(f"[bridge] quality: {FMTS[fmt]['label']} (this download only)")
         if referer: self._referers[url] = referer
         # Page title from the extension — used to name sniffed raw streams
         # (Artlist/Pinterest m3u8) that carry no metadata title of their own.
@@ -1677,6 +1692,11 @@ class App:
             self.url_box.insert("1.0", url)
             self.root.update_idletasks()
             self._start()
+        # Restore the dropdown after the one-shot override (workers captured
+        # their format at start; this only resets the UI default).
+        if prev_fmt:
+            try: self.fmt_var.set(prev_fmt)
+            except Exception: pass
 
     # -- resume -------------------------------------------------------------
     def _restore_basket_if_on(self):
