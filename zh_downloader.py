@@ -49,7 +49,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.3"
+APP_VER     = "6.6.4"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -594,7 +594,7 @@ class Bridge(BaseHTTPRequestHandler):
         # app's dedup uses; read-only peek — _recv_ext still enforces.)
         status = "queued"
         try:
-            k = url.split("?", 1)[0].split("#", 1)[0]
+            k = self.app._dedup_key(url)
             if (time.time() - self.app._recent_sends.get(k, 0)) < 90:
                 status = "duplicate"
         except Exception:
@@ -1658,6 +1658,18 @@ class App:
         except Q.Empty: pass
         self.root.after(80, self._poll)
 
+    def _dedup_key(self, u):
+        """Identity for dedup. Raw CDN streams (.m3u8/.mp4/.ts…) carry rotating
+        signed tokens in the query → strip it. Page/extractor URLs put the video
+        id IN the query (youtube ?v=, facebook ?v=, ?story_fbid=) → KEEP it, else
+        every youtube.com/watch collapses to one key and the 2nd video is wrongly
+        rejected as 'already added'."""
+        base = (u or "").split("#", 1)[0]
+        path = base.split("?", 1)[0]
+        if re.search(r"\.(m3u8|mpd|mp4|ts|m4s|webm|mov|mkv)$", path, re.I):
+            return path
+        return base
+
     def _recv_ext(self, payload):
         """Background receive — no window jump, no bell."""
         fmt = ""; title = ""
@@ -1684,7 +1696,7 @@ class App:
         # exact-URL check saw "new" URLs and the same clip downloaded again and
         # again — piling up "name (1).mp4 / (2).mp4". Also swallows double-clicks
         # and re-clicks right after a finished run (90s window).
-        key = url.split("?", 1)[0].split("#", 1)[0]
+        key = self._dedup_key(url)
         now = time.time()
         self._recent_sends = {k: t for k, t in self._recent_sends.items() if now - t < 90}
         if key in self._recent_sends:
@@ -2333,9 +2345,9 @@ class App:
 
     def _enqueue_live(self, url, referer=""):
         """Add URL to in-flight queue. Spawns worker that uses existing semaphore pool."""
-        # Compare without query/fragment — signed CDN tokens change per sniff,
-        # letting the same stream through the exact-URL check as a "new" item.
-        _k = lambda u: u.split("?", 1)[0].split("#", 1)[0]
+        # Same identity rule as the bridge dedup (raw streams stripped, page URLs
+        # kept) so two different YouTube videos aren't treated as one.
+        _k = self._dedup_key
         if any(_k(it.url) == _k(url) for it in self._items): return False
         if referer: self._referers[url] = referer
         idx = len(self._items) + 1
@@ -3131,6 +3143,20 @@ class App:
         self.btn_dl.configure(state="normal", text="↓ Download")
         self.btn_cancel.configure(state="disabled")
         self.btn_pause.configure(state="disabled")
+        # Reconcile: the pool has ended, so NOTHING should still read "waiting" or
+        # "downloading". If such a row has a real file on disk, it finished but
+        # missed its done-flag → mark done; otherwise it truly failed → error.
+        # Guarantees the queue never shows a stuck "Waiting" after a run.
+        if not self._paused and not self._stop.is_set():
+            for it in self._items:
+                if getattr(it, "_prev_run", False): continue
+                if it.status in ("waiting", "downloading"):
+                    f = getattr(it, "done_f", "")
+                    if f and Path(f).exists() and Path(f).stat().st_size > 51200:
+                        it.status = "done"; it.pct = 100
+                    else:
+                        it.status = "error"
+                    self._mq.put(("item_up", it))
         self._mq.put(("spd",0))
         done = sum(1 for it in self._items if it.status=="done" and not getattr(it,"_prev_run",False))
         err  = sum(1 for it in self._items if it.status=="error" and not getattr(it,"_prev_run",False))

@@ -225,7 +225,7 @@ jobs:
             --root "$PKG_ROOT" \
             --scripts "$SCR" \
             --identifier "com.zhmotions.downloader" \
-            --version "6.6.3" \
+            --version "6.6.4" \
             --install-location "/" \
             "$COMP_DIR/component.pkg"
           cat > "$COMP_DIR/dist.xml" << 'DISTEOF'
