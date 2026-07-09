@@ -49,11 +49,11 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.4"
+APP_VER     = "6.6.5"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
-EXT_STORE_URL = ""   # set after Chrome Web Store publish → app button opens it
+EXT_STORE_URL = "https://zhmotions.com/extension"   # server redirect → Chrome Web Store listing (edit extension/index.php, not the app)
 
 DEFAULT_DIR  = str(Path.home() / "Downloads" / "ZHDownloader")
 CFG_PATH     = Path.home() / ".zhdownloader.json"
@@ -326,10 +326,13 @@ _4K = (
     + _TAIL
 )
 _HD = (
-    "bestvideo[height>=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
-    "bestvideo[height>=1080][ext=mp4]+bestaudio[ext=m4a]/"
-    "bestvideo[height>=1080]+bestaudio/"
-    "bestvideo[height>=720]+bestaudio"
+    # <=1080, NOT >=: "bestvideo[height>=1080]" means "best stream at or above
+    # 1080" — on a 4K video that IS the 2160p stream, so picking HD still
+    # downloaded 4K. <=1080 caps it; bestvideo then takes the max under the cap
+    # (1080 if offered, else 720 etc.), and _TAIL still rescues tiny videos.
+    "bestvideo[height<=1080][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+    "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/"
+    "bestvideo[height<=1080]+bestaudio"
     + _TAIL
 )
 
@@ -355,6 +358,9 @@ class DL:
         self.name    = urllib.parse.unquote(
                            Path(urllib.parse.urlparse(url).path).name or url[:50])[:80]
         self.status  = "waiting"
+        self.fk      = None    # per-item quality; None = pool default (self._fk)
+        self.stop_ev   = threading.Event()  # per-item stop — pause/cancel ONE row, not the pool
+        self.stop_mode = ""                 # "pause" | "cancel" when stop_ev fires
         self.pct     = 0.0
         self.speed_v = 0
         self.eta_v   = None
@@ -682,6 +688,13 @@ class App:
         # Apply autostart preference (idempotent — won't duplicate entry)
         if self.cfg.get("autostart", True):
             root.after(3000, lambda: self._apply_autostart(True))
+
+        # First launch after install: offer the browser extension once (button opens
+        # the Chrome Web Store via zhmotions.com/extension). Never repeats.
+        if not self.cfg.get("ext_prompted"):
+            self.cfg["ext_prompted"] = True
+            jsave(CFG_PATH, self.cfg)
+            root.after(4500, self._ext_first_run)
 
         # Intercept window close to minimize-to-tray (if available)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1438,18 +1451,25 @@ class App:
         prog.grid(row=0, column=mid_col+1, rowspan=2, padx=(8,10), sticky="e")
         prog["value"] = item.pct
 
-        # Right: per-item action menu
+        # Right: per-item action menu — ⏸/▶ pauses/resumes THIS row only,
+        # ✕ cancels (first click) then removes (second click).
         act = tk.Frame(inner, bg=T["SURF"])
         act.grid(row=0, column=mid_col+2, rowspan=2, padx=(0,6))
+        pbtn = ttk.Button(act, text="⏸", style="Ghost.TButton",
+                          command=lambda i=item: self._pause_item(i),
+                          width=2)
+        pbtn.pack(pady=(0,2))
         ttk.Button(act, text="✕", style="Ghost.TButton",
                    command=lambda i=item: self._remove_item(i),
                    width=2).pack()
 
         self._row_widgets[item.id] = {
             "card":card,"icon":ico,"name":name,"meta":meta,"prog":prog,"thumb":thumb,
+            "pbtn":pbtn,
         }
         item.row = card
         item._lbl_icon = ico; item._lbl_name = name; item._lbl_meta = meta; item._prog = prog
+        item._btn_pause = pbtn
 
     def _fetch_thumb(self, item, label):
         """Async fetch + display thumbnail for queue card. PIL only."""
@@ -1499,12 +1519,49 @@ class App:
         except Exception:
             pass
 
+    # ── Per-item pause / resume / cancel ────────────────────────────────
+    def _pause_item(self, item):
+        if item.status in ("downloading", "waiting"):
+            item.stop_mode = "pause"; item.stop_ev.set()
+            item.status = "paused" if item.status == "waiting" else item.status
+            self._mq.put(("item_up", item))
+            self.log(f"[pause] {getattr(item,'name',item.url)[:55]}")
+        elif item.status == "paused":
+            self._resume_item(item)
+
+    def _resume_item(self, item):
+        # Fresh event — the old one stays set for the worker that's still exiting.
+        item.stop_ev = threading.Event(); item.stop_mode = ""
+        # A previous GLOBAL cancel/pause leaves self._stop set; a solo resume
+        # would instantly re-pause off it. Clear it when no pool is running.
+        if not self._is_running():
+            self._stop.clear(); self._paused = False
+        if not hasattr(self, "_out"): self._out = self.cfg.get("dir", DEFAULT_DIR)
+        if not hasattr(self, "_fk"):  self._fk  = self.cfg.get("fmt", "4k")
+        if getattr(self, "_workers", None) is None: self._workers = []
+        item.status = "waiting"
+        self._mq.put(("item_up", item))
+        # yt-dlp continues the .part file — no bytes lost.
+        t = threading.Thread(target=self._runner, args=(item,), daemon=True)
+        self._workers.append(t); t.start()
+        self.log(f"[resume] {getattr(item,'name',item.url)[:55]}")
+
     def _remove_item(self, item):
-        if item.status == "downloading":
-            messagebox.showwarning(APP_NAME, "Cannot remove active download. Cancel first."); return
+        if item.status in ("downloading", "waiting") and not getattr(item, "_prev_run", False):
+            # First ✕ = cancel just this row (worker exits at the next chunk).
+            # A second ✕ removes the now-cancelled row.
+            item.stop_mode = "cancel"; item.stop_ev.set()
+            self.log(f"[cancel] {getattr(item,'name',item.url)[:55]}")
+            return
         self._items = [i for i in self._items if i.id != item.id]
         w = self._row_widgets.pop(item.id, None)
         if w and w["card"].winfo_exists(): w["card"].destroy()
+        for i, it in enumerate(self._items, 1):
+            it.idx = i; it.total = len(self._items)
+        # Drop it from the resume queue too, or the next session revives it.
+        self.state["queue"] = [q for q in self.state.get("queue", [])
+                               if q.get("url") != item.url]
+        jsave(STATE_PATH, self.state)
 
     def _update_row(self, item):
         if not item.row or not item.row.winfo_exists(): return
@@ -1519,6 +1576,17 @@ class App:
         icon, col = icons.get(item.status, ("⏳", T["MUTED"]))
         item._lbl_icon.configure(text=icon, fg=col)
         item._prog["value"] = item.pct
+        # ⏸ ↔ ▶ follows the row's state; dead rows lose the button.
+        pb = getattr(item, "_btn_pause", None)
+        if pb:
+            try:
+                if item.status == "paused":
+                    pb.configure(text="▶", state="normal")
+                elif item.status in ("waiting", "downloading"):
+                    pb.configure(text="⏸", state="normal")
+                else:
+                    pb.configure(state="disabled")
+            except Exception: pass
         parts = []
         if item.size_v:  parts.append(sz(item.size_v))
         if item.speed_v: parts.append(spd(item.speed_v))
@@ -1719,8 +1787,10 @@ class App:
         if self._is_running() and getattr(self, "_sem", None) is not None:
             # Live-enqueue into the running pool. Do NOT also add to url_box —
             # it is already downloading; re-adding doubles it on the next Start.
-            if self._enqueue_live(url, referer):
-                self.log("[bridge] Added to live queue")
+            # fmt rides on the item: the pool default used to override it here.
+            if self._enqueue_live(url, referer, fmt):
+                self.log("[bridge] Added to live queue"
+                         + (f" at {FMTS[fmt]['label']}" if fmt in FMTS else ""))
             else:
                 self.log("[bridge] Already in queue — skipped")
         else:
@@ -1817,6 +1887,13 @@ class App:
 
 
     # ── Browser extension helper ─────────────────────────────────────────
+    def _ext_first_run(self):
+        # Skip if the extension already pinged the bridge (user has it installed).
+        if getattr(self, "_ext_seen", False):
+            return
+        try: self._ext_dialog()
+        except Exception: pass
+
     def _ext_dialog(self):
         w = tk.Toplevel(self.root); w.title("Browser integration")
         w.configure(bg=T["BG"]); w.geometry("520x300"); w.transient(self.root)
@@ -1952,8 +2029,27 @@ class App:
         b = tk.Toplevel(self.root)
         b.overrideredirect(True)
         b.attributes("-topmost", True)
+        # macOS: overrideredirect windows silently LOSE topmost the moment another
+        # app activates — the basket slid behind everything. The unsupported
+        # MacWindowStyle "floating" class puts it on the real floating layer
+        # (Spotlight-style), above other apps, without stealing focus.
+        try:
+            b.tk.call("::tk::unsupported::MacWindowStyle", "style", b._w,
+                      "floating", "noActivates")
+        except Exception: pass
         try: b.attributes("-alpha", 0.92)
         except Exception: pass
+        # Belt-and-braces: re-assert topmost every 2s (covers Windows focus
+        # steals + macOS Spaces switches where even floating panels dip).
+        def keep_top():
+            if not (getattr(self, "_basket", None) and self._basket.winfo_exists()):
+                return
+            try:
+                self._basket.lift()
+                self._basket.attributes("-topmost", True)
+            except Exception: pass
+            self.root.after(2000, keep_top)
+        self.root.after(2000, keep_top)
         sw = b.winfo_screenwidth()
         x, y = self.cfg.get("basket_xy", [sw - 130, 90])
         b.geometry(f"74x74+{int(x)}+{int(y)}")
@@ -1979,9 +2075,13 @@ class App:
             wdg.bind("<Button-2>", lambda e: self._toggle_basket())
         # accept dropped links
         if HAS_DND:
+            # Register the WHOLE basket, all drop types. It used to be the inner
+            # label + text-only: drops landing a few px off the label, or links
+            # delivered as a file/uri type, silently did nothing.
             try:
-                lbl.drop_target_register(DND_TEXT)
-                lbl.dnd_bind("<<Drop>>", self._basket_drop)
+                for tgt in (b, lbl):
+                    tgt.drop_target_register(DND_TEXT, DND_FILES)
+                    tgt.dnd_bind("<<Drop>>", self._basket_drop)
             except Exception as e:
                 self.log(f"[basket] dnd unavailable: {e}", "warn")
         self._basket = b
@@ -1991,13 +2091,35 @@ class App:
         urls = [u for u in URL_RE.findall(raw) if not u.startswith(("blob:", "data:"))]
         if not urls:
             self.log("[basket] no URL in drop", "warn"); return
-        self._quick_add(urls)
+        # DEFER the popup out of the tkdnd callback. Building a Toplevel inside
+        # the <<Drop>> handler kept the drag transaction open — the browser's
+        # drag never completed and the popup sat behind it as an unclickable
+        # "ghost". Return first so the drop finishes, then open the popup.
+        self.root.after(30, lambda u=urls: self._quick_add(u))
+        return "copy"
 
     # ── IDM-style quick-add popup ────────────────────────────────────────
     def _quick_add(self, urls):
         w = tk.Toplevel(self.root); w.title("Add download")
         w.configure(bg=T["BG"]); w.attributes("-topmost", True)
-        w.geometry("460x210")
+        # Open NEXT TO the basket (that's where the user's eyes/mouse are),
+        # clamped on-screen; fall back to center when the basket is off.
+        geo = "460x210"
+        try:
+            bk = getattr(self, "_basket", None)
+            if bk and bk.winfo_exists():
+                sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
+                x = min(max(bk.winfo_x() - 470, 8), sw - 470)
+                y = min(max(bk.winfo_y(), 8), sh - 240)
+                geo = f"460x210+{x}+{y}"
+        except Exception: pass
+        w.geometry(geo)
+        # Force it to the front even while the browser still owns focus after
+        # the drag — otherwise it opened BEHIND and looked like nothing happened.
+        try:
+            w.lift(); w.focus_force()
+            w.after(80, lambda: (w.lift(), w.attributes("-topmost", True)))
+        except Exception: pass
         first = urls[0] if urls else ""
         show = first if len(first) <= 52 else first[:49] + "…"
         extra = f"  (+{len(urls)-1} more)" if len(urls) > 1 else ""
@@ -2021,9 +2143,16 @@ class App:
             merged = (cur_txt + "\n" if cur_txt else "") + "\n".join(urls)
             self.url_box.delete("1.0", "end"); self.url_box.insert("1.0", merged)
         def dl_now():
+            prev = self.fmt_var.get()
             apply_common(); w.destroy()
             self._restore_window()
             self._start()
+            # One-shot: the picker's quality applies to THIS add only. Leaving it
+            # in the dropdown is the old sticky-mp3 trap — one Audio pick and every
+            # later plain click quietly downloaded mp3.
+            if qv.get() != prev:
+                try: self.fmt_var.set(prev)
+                except Exception: pass
         def queue_only():
             apply_common(); w.destroy()
             self.log(f"[basket] {len(urls)} URL(s) added to the box — press Download when ready.")
@@ -2152,6 +2281,19 @@ class App:
             except:
                 messagebox.showwarning(APP_NAME,"Paste at least one valid URL."); return
 
+        # Pool already running (basket "Download now", stray Start): live-enqueue
+        # instead of rebuilding. _do_start mid-run orphaned in-flight workers —
+        # their rows vanished, self._workers/_sem were replaced, and self._fk
+        # flipped under items that were still downloading.
+        if self._is_running() and getattr(self, "_sem", None) is not None:
+            fk = self.fmt_var.get().split(":")[0].strip()
+            if fk not in FMTS: fk = "4k"
+            added = sum(1 for u in urls if self._enqueue_live(u, "", fk))
+            try: self.url_box.delete("1.0", "end")
+            except Exception: pass
+            self.log(f"[queue] {added} of {len(urls)} URL(s) joined the running queue at {FMTS[fk]['label']}")
+            return
+
         out = self.folder_var.get().strip() or DEFAULT_DIR
         Path(out).mkdir(parents=True, exist_ok=True)
         fk = self.fmt_var.get().split(":")[0].strip()
@@ -2218,9 +2360,11 @@ class App:
             self._run_items = new_items
             self._build_rows(self._items)
         else:
-            # Reset state on existing items
+            # Reset state on existing items (incl. per-item stop flags — a leftover
+            # set stop_ev would instantly re-pause the fresh run).
             for it in self._items:
                 it.status = "waiting"; it.pct = 0; it.speed_v = 0; it.eta_v = None
+                it.stop_ev = threading.Event(); it.stop_mode = ""
                 self._mq.put(("item_up", it))
             self._run_items = list(self._items)
         # URLs are now captured as items — clear the box so a later Start /
@@ -2306,15 +2450,21 @@ class App:
         # died and the item froze at "waiting" forever (0 active, stuck queue).
         sem = self._sem or nullcontext()
         with sem:
-            if self._stop.is_set():
-                item.status = "paused" if self._paused else "cancelled"
+            if self._stop.is_set() or item.stop_ev.is_set():
+                m = getattr(item, "stop_mode", "")
+                if   m == "pause":  item.status = "paused"
+                elif m == "cancel": item.status = "cancelled"
+                else: item.status = "paused" if self._paused else "cancelled"
                 self._mq.put(("item_up", item)); return
             with self._active_lock:
                 self._active_count += 1
                 self._mq.put(("concur", (self._active_count, len(self._items))))
             try:
                 item.start_t = time.time()
-                self._run_download_only(item, self._out, self._fk)
+                # Per-item quality (overlay ▾ pick / basket pick) wins over the
+                # pool default — self._fk can even change mid-run on a later Start.
+                item_fk = getattr(item, "fk", None) or self._fk
+                self._run_download_only(item, self._out, item_fk)
             except Exception as e:
                 self.log(f"[error] {e}")
                 item.status = "error"
@@ -2329,11 +2479,12 @@ class App:
         # in wall-clock and keeps the machine responsive while downloads flow.
         if item.status not in ("error","paused","cancelled"):
             pp_sem = getattr(self, "_pp_sem", None)
+            item_fk = getattr(item, "fk", None) or self._fk
             try:
                 if pp_sem is not None:
-                    with pp_sem: self._postprocess(item, self._fk)
+                    with pp_sem: self._postprocess(item, item_fk)
                 else:
-                    self._postprocess(item, self._fk)
+                    self._postprocess(item, item_fk)
             except Exception as e: self.log(f"[warn] postprocess: {e}")
         item.end_t = time.time()
         if item.status == "done":
@@ -2343,8 +2494,11 @@ class App:
                                 if q.get("url") != item.url]
         jsave(STATE_PATH, self.state)
 
-    def _enqueue_live(self, url, referer=""):
-        """Add URL to in-flight queue. Spawns worker that uses existing semaphore pool."""
+    def _enqueue_live(self, url, referer="", fmt=""):
+        """Add URL to in-flight queue. Spawns worker that uses existing semaphore pool.
+        fmt: per-item quality from the overlay ▾ / basket pick — the pool's format
+        (self._fk) used to silently win here, so an HD/MP3 click while anything
+        was running still downloaded at the pool default (usually 4K)."""
         # Same identity rule as the bridge dedup (raw streams stripped, page URLs
         # kept) so two different YouTube videos aren't treated as one.
         _k = self._dedup_key
@@ -2352,12 +2506,13 @@ class App:
         if referer: self._referers[url] = referer
         idx = len(self._items) + 1
         item = DL(url, idx, idx, self._referers.get(url, ""))
+        if fmt in FMTS: item.fk = fmt
         self._items.append(item)
         for i, it in enumerate(self._items, 1):
             it.idx = i; it.total = len(self._items)
         self._build_rows(self._items)
         self.state.setdefault("queue", []).append(
-            {"url": url, "dir": self._out, "fmt": self._fk})
+            {"url": url, "dir": self._out, "fmt": item.fk or self._fk})
         jsave(STATE_PATH, self.state)
         t = threading.Thread(target=self._runner, args=(item,), daemon=True)
         self._workers.append(t); t.start()
@@ -2479,7 +2634,7 @@ class App:
             chosen = f["fmt"]
 
         def hook(d):
-            if self._stop.is_set():
+            if self._stop.is_set() or item.stop_ev.is_set():
                 raise yt_dlp.utils.DownloadError("user_stop")
             s = d.get("status")
             if s=="downloading":
@@ -2663,7 +2818,12 @@ class App:
                 self._mq.put(("item_up",item))
         except yt_dlp.utils.DownloadError as e:
             if "user_stop" in str(e):
-                item.status="paused" if self._paused else "cancelled"
+                # Per-item stop (row button) knows its own intent; fall back to
+                # the global pause/cancel state for pool-wide stops.
+                m = getattr(item, "stop_mode", "")
+                if   m == "pause":  item.status = "paused"
+                elif m == "cancel": item.status = "cancelled"
+                else: item.status = "paused" if self._paused else "cancelled"
             else:
                 self.log(f"[error] {e}")
                 item.status="error"
@@ -3376,7 +3536,9 @@ class App:
                    "• Drag .mp4 into Premiere — opens without re-encoding\n"
                    "• Codec: avc1 high profile, level 5.1, yuv420p\n\n"),
             ("h1", "Browser extension"),
-            ("",   "1. Chrome → chrome://extensions/\n"
+            ("",   "Easiest: zhmotions.com/extension → Add to Chrome (Web Store, auto-updates)\n"
+                   "Manual:\n"
+                   "1. Chrome → chrome://extensions/\n"
                    "2. Enable Developer mode (top right)\n"
                    "3. Load unpacked → select extension/ folder\n"
                    "4. Pin the ZH icon\n"
