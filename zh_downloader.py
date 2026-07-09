@@ -361,6 +361,9 @@ class DL:
         self.fk      = None    # per-item quality; None = pool default (self._fk)
         self.stop_ev   = threading.Event()  # per-item stop — pause/cancel ONE row, not the pool
         self.stop_mode = ""                 # "pause" | "cancel" when stop_ev fires
+        self.tok       = 0                  # worker generation — a resume bumps it so a stale
+                                            # worker (still blocked on the pool slot from BEFORE
+                                            # the pause) exits instead of double-downloading
         self.pct     = 0.0
         self.speed_v = 0
         self.eta_v   = None
@@ -1458,6 +1461,10 @@ class App:
         pbtn = ttk.Button(act, text="⏸", style="Ghost.TButton",
                           command=lambda i=item: self._pause_item(i),
                           width=2)
+        # Initial state mirrors the item (kept done-rows from the previous run
+        # were showing an enabled ⏸ until their first status update).
+        if item.status == "paused": pbtn.configure(text="▶")
+        elif item.status not in ("waiting", "downloading"): pbtn.configure(state="disabled")
         pbtn.pack(pady=(0,2))
         ttk.Button(act, text="✕", style="Ghost.TButton",
                    command=lambda i=item: self._remove_item(i),
@@ -1531,6 +1538,10 @@ class App:
 
     def _resume_item(self, item):
         # Fresh event — the old one stays set for the worker that's still exiting.
+        # Bump the generation FIRST: a stale worker from before the pause may still
+        # be blocked on the pool slot; without this it wakes to the fresh (unset)
+        # stop_ev and downloads the item AGAIN alongside the new worker.
+        item.tok = getattr(item, "tok", 0) + 1
         item.stop_ev = threading.Event(); item.stop_mode = ""
         # A previous GLOBAL cancel/pause leaves self._stop set; a solo resume
         # would instantly re-pause off it. Clear it when no pool is running.
@@ -2033,23 +2044,28 @@ class App:
         # app activates — the basket slid behind everything. The unsupported
         # MacWindowStyle "floating" class puts it on the real floating layer
         # (Spotlight-style), above other apps, without stealing focus.
+        # (plain "floating" — the extra noActivates attribute stopped the panel
+        # from receiving drag-and-drop on some macOS versions)
         try:
-            b.tk.call("::tk::unsupported::MacWindowStyle", "style", b._w,
-                      "floating", "noActivates")
+            b.tk.call("::tk::unsupported::MacWindowStyle", "style", b._w, "floating")
         except Exception: pass
         try: b.attributes("-alpha", 0.92)
         except Exception: pass
         # Belt-and-braces: re-assert topmost every 2s (covers Windows focus
         # steals + macOS Spaces switches where even floating panels dip).
+        # Single keeper loop — toggling the basket off/on used to stack loops.
         def keep_top():
             if not (getattr(self, "_basket", None) and self._basket.winfo_exists()):
+                self._basket_keeper = False
                 return
             try:
                 self._basket.lift()
                 self._basket.attributes("-topmost", True)
             except Exception: pass
             self.root.after(2000, keep_top)
-        self.root.after(2000, keep_top)
+        if not getattr(self, "_basket_keeper", False):
+            self._basket_keeper = True
+            self.root.after(2000, keep_top)
         sw = b.winfo_screenwidth()
         x, y = self.cfg.get("basket_xy", [sw - 130, 90])
         b.geometry(f"74x74+{int(x)}+{int(y)}")
@@ -2075,15 +2091,20 @@ class App:
             wdg.bind("<Button-2>", lambda e: self._toggle_basket())
         # accept dropped links
         if HAS_DND:
-            # Register the WHOLE basket, all drop types. It used to be the inner
-            # label + text-only: drops landing a few px off the label, or links
-            # delivered as a file/uri type, silently did nothing.
-            try:
-                for tgt in (b, lbl):
+            # Register label AND window, each in its OWN try: registering a
+            # Toplevel can throw on some platforms, and one shared try meant
+            # that failure also killed the label's registration — the basket
+            # then accepted no drops at all.
+            ok = 0
+            for tgt in (lbl, b):
+                try:
                     tgt.drop_target_register(DND_TEXT, DND_FILES)
                     tgt.dnd_bind("<<Drop>>", self._basket_drop)
-            except Exception as e:
-                self.log(f"[basket] dnd unavailable: {e}", "warn")
+                    ok += 1
+                except Exception as e:
+                    self.log(f"[basket] dnd register ({tgt.winfo_class()}): {e}", "warn")
+            if not ok:
+                self.log("[basket] drag-and-drop unavailable — drop links on the app's URL box instead", "warn")
         self._basket = b
 
     def _basket_drop(self, event):
@@ -2149,9 +2170,15 @@ class App:
             self._start()
             # One-shot: the picker's quality applies to THIS add only. Leaving it
             # in the dropdown is the old sticky-mp3 trap — one Audio pick and every
-            # later plain click quietly downloaded mp3.
+            # later plain click quietly downloaded mp3. _start also persisted the
+            # picker quality into cfg["fmt"], so restore that too or the next app
+            # launch (and the next plain click) comes back as the picked format.
             if qv.get() != prev:
-                try: self.fmt_var.set(prev)
+                try:
+                    self.fmt_var.set(prev)
+                    pk = prev.split(":")[0].strip()
+                    if pk in FMTS:
+                        self.cfg["fmt"] = pk; jsave(CFG_PATH, self.cfg)
                 except Exception: pass
         def queue_only():
             apply_common(); w.destroy()
@@ -2365,6 +2392,7 @@ class App:
             for it in self._items:
                 it.status = "waiting"; it.pct = 0; it.speed_v = 0; it.eta_v = None
                 it.stop_ev = threading.Event(); it.stop_mode = ""
+                it.tok = getattr(it, "tok", 0) + 1   # orphan any stale blocked worker
                 self._mq.put(("item_up", it))
             self._run_items = list(self._items)
         # URLs are now captured as items — clear the box so a later Start /
@@ -2448,8 +2476,11 @@ class App:
         # self._sem = None right as a late (live-enqueued) worker starts, and
         # `with None:` used to raise AttributeError BEFORE the try — the thread
         # died and the item froze at "waiting" forever (0 active, stuck queue).
+        my_tok = getattr(item, "tok", 0)
         sem = self._sem or nullcontext()
         with sem:
+            if getattr(item, "tok", 0) != my_tok:
+                return   # superseded: item was paused+resumed while this worker waited for a slot
             if self._stop.is_set() or item.stop_ev.is_set():
                 m = getattr(item, "stop_mode", "")
                 if   m == "pause":  item.status = "paused"
@@ -3223,8 +3254,13 @@ class App:
             self._mq.put(("status",f"[{item.idx}/{item.total}] {p:.0f}% · {spd(s)} · ETA {eta(r)}"))
         rate = int(self.cfg.get("rate_kbps",0)) * 1024
         dl = FileDL(url, Path(out), n=THREADS, prog_cb=prog, log_cb=self.log,
-                    cancel_fn=lambda: self._stop.is_set(), rate_limit=rate)
+                    cancel_fn=lambda: self._stop.is_set() or item.stop_ev.is_set(),
+                    rate_limit=rate)
         res = dl.run()
+        if item.stop_ev.is_set():
+            m = getattr(item, "stop_mode", "")
+            item.status = "paused" if m == "pause" else "cancelled"
+            self._mq.put(("item_up", item)); return
         if res:
             # Apply conflict resolution
             final = self._resolve_conflict(Path(res))
