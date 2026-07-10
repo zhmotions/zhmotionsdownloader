@@ -1240,6 +1240,18 @@ class App:
                 command=lambda: (self._save_setting("autostart", self.auto_var.get()),
                                  self._apply_autostart(self.auto_var.get()))))
 
+        # Subtitle languages (used when the Subtitles checkbox is on)
+        SUB_LANG_OPTS = ["en,bn", "en", "bn", "hi", "ar", "es", "en,bn,hi", "all"]
+        self.slang_var = tk.StringVar(value=str(self.cfg.get("sub_langs", "en,bn")))
+        self._add_setting(body, 8, "Subtitle languages (when Subtitles is ticked)",
+            lambda r: tk.OptionMenu(r, self.slang_var, *SUB_LANG_OPTS,
+                                    command=lambda v: self._save_setting("sub_langs", v)))
+
+        # Software update
+        self._add_setting(body, 9, f"Software update (installed: v{APP_VER})",
+            lambda r: ttk.Button(r, text="⬇ Check & Update Now", style="Main.TButton",
+                                 command=self._update_now))
+
         # Footer
         ftr = tk.Frame(tab, bg=T["BG"]); ftr.pack(fill="x", padx=14, pady=(18,14))
         tk.Frame(ftr, bg=T["BORDER"], height=1).pack(fill="x", pady=(0,10))
@@ -2833,7 +2845,8 @@ class App:
             "noplaylist":                 not self.pl_var.get(),
             "writesubtitles":             self.sub_var.get(),
             "writeautomaticsub":          self.sub_var.get(),
-            "subtitleslangs":             ["en","bn"] if self.sub_var.get() else [],
+            "subtitleslangs":             ([l.strip() for l in str(self.cfg.get("sub_langs","en,bn")).split(",") if l.strip()]
+                                           if self.sub_var.get() else []),
             "writethumbnail":             self.thumb_var.get(),
             "ignoreerrors":               True,
             "progress_hooks":             [hook],
@@ -3772,6 +3785,56 @@ class App:
         """Background: check app + yt-dlp updates."""
         threading.Thread(target=self._update_app_check, daemon=True).start()
         threading.Thread(target=self._update_ytdlp_silent, daemon=True).start()
+
+    # ── One-click updater (Settings → "Check & Update Now") ─────────────
+    def _update_now(self):
+        if getattr(self, "_updating", False):
+            self.log("[update] already downloading — check the log"); return
+        self._updating = True
+        threading.Thread(target=self._update_now_worker, daemon=True).start()
+
+    def _update_now_worker(self):
+        try:
+            self.log("[update] checking latest version…")
+            try:
+                body = self._http_get(
+                    "https://api-relay-2.zhmotionspanel.workers.dev/api.php?action=app_version&app=zhdownloader",
+                    "application/json")
+                data = json.loads(body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body))
+                latest = str(data.get("version", "")).strip()
+            except Exception as e:
+                self.log(f"[update] version check failed: {e}"); return
+            def _t(v):
+                try: return tuple(int(x) for x in re.findall(r"\d+", v)[:4])
+                except Exception: return (0,)
+            if not latest or _t(latest) <= _t(APP_VER):
+                self.log(f"[update] you're on the latest version (v{APP_VER}) ✓"); return
+            self.log(f"[update] v{latest} available — downloading installer…")
+            if sys.platform == "darwin":
+                url, fname = "https://zhmotions.com/downloader/ZHDownloader-macOS.pkg", f"ZHDownloader-{latest}.pkg"
+            elif os.name == "nt":
+                url, fname = "https://zhmotions.com/downloader/ZHDownloader-Setup.msi", f"ZHDownloader-Setup-{latest}.msi"
+            else:
+                self.log("[update] auto-install unsupported here — get it from zhmotions.com/downloader"); return
+            dest = Path.home() / "Downloads" / fname
+            # curl streams the big installer reliably (same firewall logic as _http_get)
+            p = subprocess.run(["curl", "-fSL", "--retry", "2", "-m", "600", "-A", _UA,
+                                "-o", str(dest), url], capture_output=True, **_SUBPROCESS_HIDE)
+            if p.returncode != 0 or not dest.exists() or dest.stat().st_size < 5_000_000:
+                self.log("[update] download failed — get it manually from zhmotions.com/downloader")
+                try: dest.unlink(missing_ok=True)
+                except Exception: pass
+                return
+            self.log(f"[update] downloaded {dest.name} ({dest.stat().st_size//1048576} MB) — opening installer")
+            self.log("[update] finish the installer, then reopen ZH Downloader")
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(dest)])
+            else:
+                os.startfile(str(dest))  # noqa — Windows only
+        except Exception as e:
+            self.log(f"[update] {e}")
+        finally:
+            self._updating = False
 
     def _http_get(self, url, accept="*/*"):
         """GET a URL, returning bytes. Tries curl FIRST.
