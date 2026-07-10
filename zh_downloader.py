@@ -1908,7 +1908,7 @@ class App:
     def _ext_dialog(self):
         w = tk.Toplevel(self.root); w.title("Browser integration")
         w.configure(bg=T["BG"]); w.geometry("520x300"); w.transient(self.root)
-        tk.Label(w, text="🧩 Browser extension", bg=T["BG"], fg=T["FG"],
+        tk.Label(w, text="🧩 Browser extension", bg=T["BG"], fg=T["TEXT"],
                  font=("Helvetica", 14, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
         tk.Label(w, text=("The extension adds the ⬇ Download button on top of videos\n"
                           "(IDM style) and catches downloads from the browser."),
@@ -1972,7 +1972,7 @@ class App:
         w = tk.Toplevel(self.root); w.title(f"Playlist — {len(entries)} items")
         w.configure(bg=T["BG"]); w.geometry("620x520"); w.transient(self.root)
         tk.Label(w, text=f"Select what to download ({len(entries)} items found)",
-                 bg=T["BG"], fg=T["FG"], font=("Helvetica", 13, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
+                 bg=T["BG"], fg=T["TEXT"], font=("Helvetica", 13, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
         # scrollable checkbox list
         body = tk.Frame(w, bg=T["BG"]); body.pack(fill="both", expand=True, padx=14)
         cv = tk.Canvas(body, bg=T["BG"], highlightthickness=0)
@@ -1989,7 +1989,7 @@ class App:
             row = tk.Frame(inner, bg=T["BG"]); row.pack(fill="x", pady=1)
             ttk.Checkbutton(row, variable=v).pack(side="left")
             t = e["title"] if len(e["title"]) <= 68 else e["title"][:65] + "…"
-            tk.Label(row, text=f"{i+1:>3}. {t}", bg=T["BG"], fg=T["FG"], anchor="w",
+            tk.Label(row, text=f"{i+1:>3}. {t}", bg=T["BG"], fg=T["TEXT"], anchor="w",
                      font=("Helvetica", 11)).pack(side="left", fill="x", expand=True)
             if e["dur"]:
                 tk.Label(row, text=e["dur"], bg=T["BG"], fg=T["MUTED"],
@@ -2167,7 +2167,7 @@ class App:
             w.after(80, lambda: (w.lift(), w.attributes("-topmost", True)))
         except Exception: pass
         first = urls[0] if urls else ""
-        tk.Label(w, text="New download", bg=T["BG"], fg=T["FG"],
+        tk.Label(w, text="New download", bg=T["BG"], fg=T["TEXT"],
                  font=("Helvetica", 13, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
         # Editable URL row — basket CLICK opens this popup with the clipboard URL
         # (or empty, ready to paste); drops land with the URL already filled.
