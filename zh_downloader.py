@@ -2080,6 +2080,7 @@ class App:
         # drag to move · CLICK to add a link (clipboard auto-fill) · double-click restore
         def press(e):
             b._off = (e.x, e.y); b._orig = (e.x_root, e.y_root); b._moved = False
+            self.log("[basket] press")
         def move(e):
             ox, oy = getattr(b, "_off", (37, 37))
             gx, gy = getattr(b, "_orig", (e.x_root, e.y_root))
@@ -2132,6 +2133,15 @@ class App:
     def _basket_click(self):
         # Click path into the same add popup the drop uses — works even where
         # drag-and-drop onto the floating panel isn't delivered by the OS.
+        self.log("[basket] click")
+        # The click usually lands while ANOTHER app is frontmost. On macOS a
+        # background Tk app's new window opens BEHIND the frontmost app and
+        # focus_force is ignored (focus-stealing protection) — the popup existed
+        # but the user never saw it. Activating our own bundle first brings the
+        # popup to the real front. No permissions needed for self-activation.
+        if sys.platform == "darwin":
+            try: subprocess.Popen(["open", "-b", "com.zhmotions.downloader"])
+            except Exception: pass
         url = ""
         try:
             clip = self.root.clipboard_get().strip()
@@ -2140,6 +2150,10 @@ class App:
         self._quick_add([url] if url else [])
 
     def _basket_drop(self, event):
+        self.log("[basket] drop received")
+        if sys.platform == "darwin":
+            try: subprocess.Popen(["open", "-b", "com.zhmotions.downloader"])
+            except Exception: pass
         raw = (event.data or "").replace("{", " ").replace("}", " ")
         urls = [u for u in URL_RE.findall(raw) if not u.startswith(("blob:", "data:"))]
         if not urls:
@@ -2153,6 +2167,7 @@ class App:
 
     # ── IDM-style quick-add popup ────────────────────────────────────────
     def _quick_add(self, urls):
+        self.log("[basket] add popup opening")
         w = tk.Toplevel(self.root); w.title("Add download")
         w.configure(bg=T["BG"]); w.attributes("-topmost", True)
         # Open NEXT TO the basket (that's where the user's eyes/mouse are),
@@ -2718,7 +2733,11 @@ class App:
 
         def hook(d):
             if self._stop.is_set() or item.stop_ev.is_set():
-                raise yt_dlp.utils.DownloadError("user_stop")
+                # DownloadCancelled, NOT DownloadError: the HLS fragment
+                # downloader treats a DownloadError from the hook as a fragment
+                # failure and RETRIES it forever — pause/cancel never actually
+                # stopped m3u8 downloads. DownloadCancelled propagates straight out.
+                raise yt_dlp.utils.DownloadCancelled("user_stop")
             s = d.get("status")
             if s=="downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -2899,10 +2918,18 @@ class App:
             if not self._stop.is_set():
                 item.status="done"; item.pct=100
                 self._mq.put(("item_up",item))
+        except yt_dlp.utils.DownloadCancelled:
+            # Pause/cancel (hook raises DownloadCancelled — NOT a DownloadError
+            # subclass, so it needs its own arm or the generic handler below
+            # would mark the row "error").
+            m = getattr(item, "stop_mode", "")
+            if   m == "pause":  item.status = "paused"
+            elif m == "cancel": item.status = "cancelled"
+            else: item.status = "paused" if self._paused else "cancelled"
+            self._mq.put(("item_up",item))
         except yt_dlp.utils.DownloadError as e:
             if "user_stop" in str(e):
-                # Per-item stop (row button) knows its own intent; fall back to
-                # the global pause/cancel state for pool-wide stops.
+                # Legacy path (older bundled yt-dlp wrapped the cancel).
                 m = getattr(item, "stop_mode", "")
                 if   m == "pause":  item.status = "paused"
                 elif m == "cancel": item.status = "cancelled"
