@@ -669,18 +669,37 @@
   var curVid = null, hideT = null;
 
   function videoUrlFor(v) {
-    // On YouTube search/home/channel pages the page URL is a LIST — yt-dlp
-    // treats it as "playlist: 0 items" and downloads only a thumbnail. The
-    // hovered preview <video> sits inside a renderer that links the real
-    // /watch?v= — walk up and use that. On /watch itself, page URL is right.
+    // On feed/search/list pages the page URL is a LIST — yt-dlp can't extract
+    // from it ("Unsupported URL" on X, "playlist: 0 items" on YouTube). The
+    // hovered <video> sits inside a card that links the REAL watch page —
+    // walk up from the video and use that link instead of location.href.
+    function walkUp(el, sel) {
+      for (var i = 0; el && i < 14; i++) {
+        var a = (el.querySelector && el.querySelector(sel)) ||
+                (el.closest && el.matches && el.matches(sel) ? el : null);
+        if (!a && el.closest) a = el.closest(sel);
+        if (a && a.getAttribute("href")) return new URL(a.getAttribute("href"), location.origin).href;
+        el = el.parentElement;
+      }
+      return "";
+    }
     try {
-      if (location.hostname.includes("youtube.com") && location.pathname !== "/watch" && v) {
-        var el = v;
-        for (var i = 0; el && i < 12; i++) {
-          var a = el.querySelector && el.querySelector('a[href*="/watch?v="], a[href^="/shorts/"]');
-          if (a && a.getAttribute("href")) return new URL(a.getAttribute("href"), location.origin).href;
-          el = el.parentElement;
-        }
+      var host = location.hostname;
+      if (host.includes("youtube.com") && location.pathname !== "/watch" && v) {
+        var yu = walkUp(v, 'a[href*="/watch?v="], a[href^="/shorts/"]');
+        if (yu) return yu;
+      }
+      // X/Twitter: only /status/ URLs are downloadable. On search/home/profile
+      // feeds, the tweet card links its own /status/ page (the timestamp link).
+      if ((host === "x.com" || host.endsWith("twitter.com")) && location.pathname.indexOf("/status/") < 0 && v) {
+        var xu = walkUp(v, 'a[href*="/status/"]');
+        if (xu) return xu.split("?")[0];
+      }
+      // Facebook feeds: the card links the real /watch?v= | /videos/ | /reel/.
+      if (host.includes("facebook.com") && v &&
+          !(/\/videos\/|\/reel|\/watch\/?\?v=|\/share\/v\//.test(location.pathname + location.search))) {
+        var fu = walkUp(v, 'a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/?v="], a[href*="/watch?v="], a[href*="/share/v/"]');
+        if (fu) return fu;
       }
     } catch (e) {}
     // blob/MSE (YouTube, FB, most sites) → the PAGE url is what yt-dlp needs

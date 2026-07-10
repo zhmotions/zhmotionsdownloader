@@ -1762,12 +1762,23 @@ class App:
         # Guard: YouTube LIST pages (search results / home / feeds) aren't videos —
         # yt-dlp treats them as "playlist: 0 items" and downloads only a thumbnail.
         try:
-            from urllib.parse import urlparse as _upr
+            from urllib.parse import urlparse as _upr, parse_qs as _pqs
             _pu = _upr(url)
             if "youtube.com" in _pu.netloc and \
                (_pu.path in ("/", "/results") or _pu.path.startswith("/feed")):
                 self.log("[bridge] skipped: that's a YouTube search/home page, not a video — open the video first")
                 return
+            # X/Twitter: only /status/ pages hold a video; search/home/profile
+            # feeds hit yt-dlp's generic extractor and die on "Unsupported URL".
+            if _pu.netloc.replace("www.", "") in ("x.com", "twitter.com") and "/status/" not in _pu.path:
+                self.log("[bridge] skipped: open the tweet itself (click its timestamp), then send — feeds/search pages have no downloadable video URL")
+                return
+            # Facebook: watch/reel/videos URLs work; bare feeds/search don't.
+            if "facebook.com" in _pu.netloc:
+                _ok = ("/videos/" in _pu.path or "/reel" in _pu.path or "/watch" in _pu.path and bool(_pqs(_pu.query).get("v")) or "/share/v/" in _pu.path or "story.php" in _pu.path)
+                if not _ok:
+                    self.log("[bridge] skipped: open the Facebook video itself (its /watch?v= or /reel/ page), then send")
+                    return
         except Exception:
             pass
         # Repeat-send guard. Dedup by URL WITHOUT the query string: Artgrid/CDN
@@ -2907,6 +2918,16 @@ class App:
                     item.status = "error"
                     self._mq.put(("item_up", item))
                     return
+            # ignoreerrors=True means an unsupported/failed URL does NOT raise —
+            # yt-dlp just logs and returns. The item then sat at "Waiting"
+            # forever and the self-heal watcher pointlessly re-ran the same
+            # failing extraction twice before giving up. No file = error, now.
+            if not item.done_f and item.status in ("waiting", "downloading") \
+               and not self._stop.is_set() and not item.stop_ev.is_set():
+                item.status = "error"
+                self.log(f"[error] no media found at: {url[:70]} — open the actual video/tweet page and try again")
+                self._mq.put(("item_up", item))
+                return
             # Skip rename + transcode if running in download-only phase.
             # _postprocess will handle them outside semaphore.
             if getattr(item, "_skip_transcode", False):
