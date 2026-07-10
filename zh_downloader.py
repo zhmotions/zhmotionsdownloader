@@ -53,7 +53,7 @@ APP_VER     = "6.6.5"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
-EXT_STORE_URL = "https://zhmotions.com/extension"   # server redirect → Chrome Web Store listing (edit extension/index.php, not the app)
+EXT_STORE_URL = "https://chromewebstore.google.com/detail/zh-downloader/gofeihalfifogcnhemcljpplpbkhemok"  # direct store listing — no server hop, works even if the site redirect is down
 
 DEFAULT_DIR  = str(Path.home() / "Downloads" / "ZHDownloader")
 CFG_PATH     = Path.home() / ".zhdownloader.json"
@@ -2072,21 +2072,36 @@ class App:
         b.configure(bg=T["ACCENT"])
         lbl = tk.Label(b, text="⬇", bg=T["ACCENT"], fg="#0a0606", font=("Helvetica", 30, "bold"))
         lbl.pack(fill="both", expand=True)
-        # drag to move
-        def press(e): b._off = (e.x, e.y)
+        # drag to move · CLICK to add a link (clipboard auto-fill) · double-click restore
+        def press(e):
+            b._off = (e.x, e.y); b._orig = (e.x_root, e.y_root); b._moved = False
         def move(e):
             ox, oy = getattr(b, "_off", (37, 37))
-            nx, ny = e.x_root - ox, e.y_root - oy
-            b.geometry(f"+{nx}+{ny}")
+            gx, gy = getattr(b, "_orig", (e.x_root, e.y_root))
+            if abs(e.x_root - gx) > 5 or abs(e.y_root - gy) > 5: b._moved = True
+            if b._moved:
+                b.geometry(f"+{e.x_root - ox}+{e.y_root - oy}")
         def release(_e):
             try:
                 geo = b.geometry().split("+")
                 self.cfg["basket_xy"] = [int(geo[1]), int(geo[2])]; jsave(CFG_PATH, self.cfg)
             except Exception: pass
+            # Plain click (no drag): open the add popup — the basket was drop-only,
+            # and a click did NOTHING, which read as "broken". Delayed past the
+            # double-click window so restore-window still works.
+            if not getattr(b, "_moved", False):
+                b._click_job = self.root.after(280, self._basket_click)
+        def dbl(_e):
+            job = getattr(b, "_click_job", None)
+            if job:
+                try: self.root.after_cancel(job)
+                except Exception: pass
+                b._click_job = None
+            self._restore_window()
         for wdg in (b, lbl):
             wdg.bind("<ButtonPress-1>", press); wdg.bind("<B1-Motion>", move)
             wdg.bind("<ButtonRelease-1>", release)
-            wdg.bind("<Double-Button-1>", lambda e: self._restore_window())
+            wdg.bind("<Double-Button-1>", dbl)
             wdg.bind("<Button-3>", lambda e: self._toggle_basket())
             wdg.bind("<Button-2>", lambda e: self._toggle_basket())
         # accept dropped links
@@ -2107,6 +2122,16 @@ class App:
                 self.log("[basket] drag-and-drop unavailable — drop links on the app's URL box instead", "warn")
         self._basket = b
 
+    def _basket_click(self):
+        # Click path into the same add popup the drop uses — works even where
+        # drag-and-drop onto the floating panel isn't delivered by the OS.
+        url = ""
+        try:
+            clip = self.root.clipboard_get().strip()
+            if URL_RE.match(clip): url = clip
+        except Exception: pass
+        self._quick_add([url] if url else [])
+
     def _basket_drop(self, event):
         raw = (event.data or "").replace("{", " ").replace("}", " ")
         urls = [u for u in URL_RE.findall(raw) if not u.startswith(("blob:", "data:"))]
@@ -2125,14 +2150,14 @@ class App:
         w.configure(bg=T["BG"]); w.attributes("-topmost", True)
         # Open NEXT TO the basket (that's where the user's eyes/mouse are),
         # clamped on-screen; fall back to center when the basket is off.
-        geo = "460x210"
+        geo = "460x250"
         try:
             bk = getattr(self, "_basket", None)
             if bk and bk.winfo_exists():
                 sw, sh = w.winfo_screenwidth(), w.winfo_screenheight()
                 x = min(max(bk.winfo_x() - 470, 8), sw - 470)
-                y = min(max(bk.winfo_y(), 8), sh - 240)
-                geo = f"460x210+{x}+{y}"
+                y = min(max(bk.winfo_y(), 8), sh - 280)
+                geo = f"460x250+{x}+{y}"
         except Exception: pass
         w.geometry(geo)
         # Force it to the front even while the browser still owns focus after
@@ -2142,12 +2167,25 @@ class App:
             w.after(80, lambda: (w.lift(), w.attributes("-topmost", True)))
         except Exception: pass
         first = urls[0] if urls else ""
-        show = first if len(first) <= 52 else first[:49] + "…"
-        extra = f"  (+{len(urls)-1} more)" if len(urls) > 1 else ""
         tk.Label(w, text="New download", bg=T["BG"], fg=T["FG"],
                  font=("Helvetica", 13, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
-        tk.Label(w, text=show + extra, bg=T["BG"], fg=T["MUTED"],
-                 font=("Menlo", 10)).pack(anchor="w", padx=16)
+        # Editable URL row — basket CLICK opens this popup with the clipboard URL
+        # (or empty, ready to paste); drops land with the URL already filled.
+        uvar = tk.StringVar(value=first)
+        ue = tk.Entry(w, textvariable=uvar, font=("Menlo", 10),
+                      bg=T["SURF"], fg=T["TEXT"], insertbackground=T["TEXT"],
+                      relief="flat", highlightthickness=1,
+                      highlightbackground=T["BORDER"], highlightcolor=T["ACCENT"])
+        ue.pack(fill="x", padx=16, ipady=5)
+        if not first:
+            ue.focus_set()
+        ue.bind("<Return>", lambda e: dl_now())
+        if len(urls) > 1:
+            tk.Label(w, text=f"+{len(urls)-1} more link(s) from the drop", bg=T["BG"],
+                     fg=T["MUTED"], font=("Helvetica", 9)).pack(anchor="w", padx=16)
+        def _final_urls():
+            u = [x for x in ([uvar.get().strip()] + list(urls[1:])) if URL_RE.match(x or "")]
+            seen = set(); return [x for x in u if not (x in seen or seen.add(x))]
         row = tk.Frame(w, bg=T["BG"]); row.pack(fill="x", padx=16, pady=(12, 4))
         self._lbl(row, "Quality").pack(side="left", padx=(0, 6))
         cur = self.fmt_var.get().split(":")[0].strip()
@@ -2159,13 +2197,19 @@ class App:
         ttk.Checkbutton(row, text="Subtitles", variable=sv).pack(side="left", padx=(14, 0))
         btns = tk.Frame(w, bg=T["BG"]); btns.pack(fill="x", padx=16, pady=(14, 12))
         def apply_common():
+            final = _final_urls()
+            if not final:
+                messagebox.showwarning(APP_NAME, "Paste a valid link first.", parent=w)
+                return False
             self.fmt_var.set(qv.get()); self.sub_var.set(sv.get())
             cur_txt = self.url_box.get("1.0", "end").strip()
-            merged = (cur_txt + "\n" if cur_txt else "") + "\n".join(urls)
+            merged = (cur_txt + "\n" if cur_txt else "") + "\n".join(final)
             self.url_box.delete("1.0", "end"); self.url_box.insert("1.0", merged)
+            return True
         def dl_now():
             prev = self.fmt_var.get()
-            apply_common(); w.destroy()
+            if not apply_common(): return
+            w.destroy()
             self._restore_window()
             self._start()
             # One-shot: the picker's quality applies to THIS add only. Leaving it
@@ -2181,8 +2225,9 @@ class App:
                         self.cfg["fmt"] = pk; jsave(CFG_PATH, self.cfg)
                 except Exception: pass
         def queue_only():
-            apply_common(); w.destroy()
-            self.log(f"[basket] {len(urls)} URL(s) added to the box — press Download when ready.")
+            if not apply_common(): return
+            w.destroy()
+            self.log("[basket] link(s) added to the box — press Download when ready.")
         ttk.Button(btns, text="↓ Download now", style="Main.TButton", command=dl_now).pack(side="left")
         ttk.Button(btns, text="Add only", style="Ghost.TButton", command=queue_only).pack(side="left", padx=(8, 0))
         ttk.Button(btns, text="Cancel", style="Ghost.TButton", command=w.destroy).pack(side="right")
