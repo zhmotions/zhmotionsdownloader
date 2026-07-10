@@ -4002,27 +4002,18 @@ def main():
     # Make bundled binaries findable (node for YouTube PoToken, etc)
     _prepend_bundled_bins_to_path()
 
-    # Stage 1: probe tkdnd binary BEFORE creating root.
-    # Bundled .app may have Python wrapper but no native .dylib/.dll.
-    if HAS_DND:
-        try:
-            _probe = tk.Tk()
-            _probe.withdraw()
-            _probe.tk.call('package', 'require', 'tkdnd')
-            _probe.destroy()
-        except Exception as e:
-            print(f"[warn] tkdnd probe failed ({e}); drag-drop disabled")
-            HAS_DND = False
-            try: _probe.destroy()
-            except: pass
-
-    # Stage 2: build real root with chosen class
+    # Build the root with TkinterDnD directly — it configures tkdnd's package
+    # path itself and raises if the native library is missing, so it IS the
+    # probe. The old "stage 1" probed with a PLAIN tk.Tk(), whose auto_path
+    # never contains tkdnd — `package require tkdnd` failed every time, HAS_DND
+    # went False, and drag-and-drop (basket + URL box) was silently disabled in
+    # every build even though the library was present and loadable.
     root = None
     if HAS_DND:
         try:
             root = TkinterDnD.Tk()
         except Exception as e:
-            print(f"[warn] TkinterDnD.Tk() failed ({e}); fallback to tk.Tk()")
+            print(f"[warn] TkinterDnD.Tk() failed ({e}); drag-drop disabled")
             HAS_DND = False
     if root is None:
         root = tk.Tk()
