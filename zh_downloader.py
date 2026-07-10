@@ -1374,6 +1374,17 @@ class App:
             elif any(k in ml for k in ("[bridge]","[file]","[info]","[resume]","[pause]","[cancel]","[history]","[schedule]","[grab]")): tag="info"
             else: tag="dim"
         self._mq.put(("log",(msg,tag)))
+        # Mirror to a small on-disk log so problems are diagnosable after the
+        # fact (the UI pane vanishes with the app). Trimmed at ~500 KB.
+        try:
+            lp = Path.home() / ".zhdownloader-log.txt"
+            if lp.exists() and lp.stat().st_size > 500_000:
+                keep = lp.read_text(errors="ignore")[-200_000:]
+                lp.write_text(keep)
+            with open(lp, "a") as f:
+                f.write(time.strftime("%H:%M:%S ") + msg.rstrip() + "\n")
+        except Exception:
+            pass
 
     def _clear_log(self):
         self.log_txt.configure(state="normal")
@@ -2047,7 +2058,7 @@ class App:
             self.cfg["basket"] = True
         jsave(CFG_PATH, self.cfg)
 
-    def _make_basket(self):
+    def _make_basket(self, plain=False):
         b = tk.Toplevel(self.root)
         b.withdraw()   # window class/flag changes must land BEFORE the first map
         # REBUILT (was overrideredirect on every platform): on macOS an
@@ -2056,7 +2067,13 @@ class App:
         # A real NSPanel via MacWindowStyle (floating + noTitleBar) looks the
         # same and actually gets clicks, drags and tkdnd drops. Windows/Linux
         # keep overrideredirect, which behaves fine there.
-        if sys.platform == "darwin":
+        # plain=True → last-resort mini window WITH a title bar: nothing exotic,
+        # events guaranteed. Auto-chosen when the styled panel fails to map.
+        if plain:
+            b.title("⬇ ZH")
+            try: b.resizable(False, False)
+            except Exception: pass
+        elif sys.platform == "darwin":
             try:
                 b.tk.call("::tk::unsupported::MacWindowStyle", "style", b._w,
                           "floating", "noTitleBar")
@@ -2141,6 +2158,21 @@ class App:
             else:
                 self.log("[basket] drag-and-drop unavailable — drop links on the app's URL box instead", "warn")
         self._basket = b
+        # Self-check: on some macOS/Tk combos the styled panel never maps or
+        # never receives events. If it isn't viewable shortly after deiconify,
+        # rebuild once as a plain titled mini window (boring but bulletproof).
+        if not plain:
+            def _verify_visible():
+                try:
+                    if not (b.winfo_exists() and b.winfo_viewable()):
+                        self.log("[basket] styled panel failed to map — using mini window instead", "warn")
+                        try: b.destroy()
+                        except Exception: pass
+                        self._make_basket(plain=True)
+                    else:
+                        self.log(f"[basket] visible ({b.geometry()})")
+                except Exception: pass
+            self.root.after(700, _verify_visible)
 
     def _basket_click(self):
         # Click path into the same add popup the drop uses — works even where
@@ -3573,6 +3605,7 @@ class App:
 
             menu = pystray.Menu(
                 pystray.MenuItem("Show ZH Downloader", _safe_cb(self._tray_show), default=True),
+                pystray.MenuItem("➕ Add from clipboard", _safe_cb(self._tray_add_clip)),
                 pystray.MenuItem("Pause all",          _safe_cb(self._tray_pause)),
                 pystray.MenuItem("Cancel all",         _safe_cb(self._tray_cancel)),
                 pystray.Menu.SEPARATOR,
@@ -3603,6 +3636,11 @@ class App:
             self.root.attributes("-topmost", True)
             self.root.after(50, lambda: self.root.attributes("-topmost", False))
         except: pass
+
+    def _tray_add_clip(self, icon=None, item=None):
+        # Menu-bar path into the same add popup — works even where the floating
+        # basket can't receive OS events. Copy a link, pick this menu item.
+        self.root.after(0, self._basket_click)
 
     def _tray_pause(self, icon=None, item=None):
         if self._is_running(): self.root.after(0, self._do_pause)
