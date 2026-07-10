@@ -2110,12 +2110,13 @@ class App:
             wdg.bind("<Double-Button-1>", dbl)
             wdg.bind("<Button-3>", lambda e: self._toggle_basket())
             wdg.bind("<Button-2>", lambda e: self._toggle_basket())
-        # accept dropped links
+        b.deiconify()   # map first — DND must register on a LIVE NSView
+        b.lift()
+        b.update_idletasks()
+        # accept dropped links — AFTER the window is mapped: registering while
+        # withdrawn lands on a not-yet-created native view, silently does
+        # nothing, and the OS then refuses every drop (drag snaps back).
         if HAS_DND:
-            # Register label AND window, each in its OWN try: registering a
-            # Toplevel can throw on some platforms, and one shared try meant
-            # that failure also killed the label's registration — the basket
-            # then accepted no drops at all.
             ok = 0
             for tgt in (lbl, b):
                 try:
@@ -2124,10 +2125,10 @@ class App:
                     ok += 1
                 except Exception as e:
                     self.log(f"[basket] dnd register ({tgt.winfo_class()}): {e}", "warn")
-            if not ok:
+            if ok:
+                self.log("[basket] ready — drop links on the gold box or click it")
+            else:
                 self.log("[basket] drag-and-drop unavailable — drop links on the app's URL box instead", "warn")
-        b.deiconify()   # show only now — fully styled, positioned and wired
-        b.lift()
         self._basket = b
 
     def _basket_click(self):
