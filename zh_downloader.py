@@ -2038,17 +2038,22 @@ class App:
 
     def _make_basket(self):
         b = tk.Toplevel(self.root)
-        b.overrideredirect(True)
+        b.withdraw()   # window class/flag changes must land BEFORE the first map
+        # REBUILT (was overrideredirect on every platform): on macOS an
+        # overrideredirect window renders but often receives NO mouse events —
+        # the basket sat there as an unclickable "ghost" and drops fell through.
+        # A real NSPanel via MacWindowStyle (floating + noTitleBar) looks the
+        # same and actually gets clicks, drags and tkdnd drops. Windows/Linux
+        # keep overrideredirect, which behaves fine there.
+        if sys.platform == "darwin":
+            try:
+                b.tk.call("::tk::unsupported::MacWindowStyle", "style", b._w,
+                          "floating", "noTitleBar")
+            except Exception:
+                b.overrideredirect(True)   # ancient Tk fallback
+        else:
+            b.overrideredirect(True)
         b.attributes("-topmost", True)
-        # macOS: overrideredirect windows silently LOSE topmost the moment another
-        # app activates — the basket slid behind everything. The unsupported
-        # MacWindowStyle "floating" class puts it on the real floating layer
-        # (Spotlight-style), above other apps, without stealing focus.
-        # (plain "floating" — the extra noActivates attribute stopped the panel
-        # from receiving drag-and-drop on some macOS versions)
-        try:
-            b.tk.call("::tk::unsupported::MacWindowStyle", "style", b._w, "floating")
-        except Exception: pass
         try: b.attributes("-alpha", 0.92)
         except Exception: pass
         # Belt-and-braces: re-assert topmost every 2s (covers Windows focus
@@ -2120,6 +2125,8 @@ class App:
                     self.log(f"[basket] dnd register ({tgt.winfo_class()}): {e}", "warn")
             if not ok:
                 self.log("[basket] drag-and-drop unavailable — drop links on the app's URL box instead", "warn")
+        b.deiconify()   # show only now — fully styled, positioned and wired
+        b.lift()
         self._basket = b
 
     def _basket_click(self):
