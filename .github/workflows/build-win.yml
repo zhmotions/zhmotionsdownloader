@@ -81,6 +81,12 @@ jobs:
             --hidden-import pystray._darwin `
             --hidden-import pystray._win32 `
             --hidden-import pystray._base `
+            --hidden-import pythoncom `
+            --hidden-import win32gui `
+            --hidden-import win32com `
+            --hidden-import win32com.server `
+            --hidden-import win32com.server.util `
+            --hidden-import win32com.server.policy `
             --copy-metadata pystray `
             --hidden-import certifi --collect-data certifi `
             zh_downloader.py

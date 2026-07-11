@@ -6,3 +6,5 @@ pystray>=0.19.5
 # macOS tray icon needs PyObjC frameworks
 pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'
 pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'
+# Windows native drag-drop (OLE IDropTarget) for the basket
+pywin32>=306; sys_platform == 'win32'

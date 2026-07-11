@@ -2267,6 +2267,54 @@ class App:
             jsave(CFG_PATH, self.cfg)
         except Exception: pass
 
+    def _attach_windows_drop(self, b):
+        """Windows: register the basket window as a native OLE drop target
+        (RegisterDragDrop — the API every real Windows app uses). tkdnd is
+        skipped for the basket here; two registrations on one HWND fail."""
+        import pythoncom, win32gui
+        from win32com.server import util as com_util
+
+        app = self
+        DROPEFFECT_COPY, CF_UNICODETEXT, CF_TEXT = 1, 13, 1
+
+        class _ZHDrop:
+            _com_interfaces_ = [pythoncom.IID_IDropTarget]
+            _public_methods_ = ["DragEnter", "DragOver", "DragLeave", "Drop"]
+            def DragEnter(self, dataobj, keystate, pt, effect):
+                return DROPEFFECT_COPY
+            def DragOver(self, keystate, pt, effect):
+                return DROPEFFECT_COPY
+            def DragLeave(self):
+                return None
+            def Drop(self, dataobj, keystate, pt, effect):
+                txt = ""
+                for cf, dec in ((CF_UNICODETEXT, "utf-16-le"), (CF_TEXT, "mbcs")):
+                    try:
+                        stg = dataobj.GetData((cf, None, 1, -1, 1))  # DVASPECT_CONTENT, TYMED_HGLOBAL
+                        raw = stg.data
+                        txt = (raw.decode(dec, "ignore") if isinstance(raw, bytes) else str(raw)).split("\x00")[0]
+                        if txt.strip(): break
+                    except Exception:
+                        continue
+                app._mq.put(("basket_drop", txt))
+                return DROPEFFECT_COPY
+
+        try: pythoncom.OleInitialize()
+        except Exception: pass
+        hwnd = 0
+        try: hwnd = win32gui.GetParent(b.winfo_id()) or b.winfo_id()
+        except Exception: hwnd = b.winfo_id()
+        pythoncom.RegisterDragDrop(hwnd, com_util.wrap(_ZHDrop(), pythoncom.IID_IDropTarget))
+        b._zh_drop_hwnd = hwnd
+        b.bind("<Destroy>", lambda e: self._detach_windows_drop(hwnd), add="+")
+        self.log("[basket] ready — native Windows drop target registered")
+
+    def _detach_windows_drop(self, hwnd):
+        try:
+            import pythoncom
+            pythoncom.RevokeDragDrop(hwnd)
+        except Exception: pass
+
     def _make_basket(self, plain=None):
         # macOS: NATIVE AppKit panel first — Tk's drag-and-drop (tkdnd) proved
         # completely dead on this OS (registered, mapped, zero events), and
@@ -2372,7 +2420,20 @@ class App:
         # accept dropped links — AFTER the window is mapped: registering while
         # withdrawn lands on a not-yet-created native view, silently does
         # nothing, and the OS then refuses every drop (drag snaps back).
-        if HAS_DND:
+        if os.name == "nt":
+            # tkdnd proved unreliable for the floating basket; use the real
+            # OLE drop-target API instead (same story as the Mac NSPanel).
+            try:
+                self._attach_windows_drop(b)
+            except Exception as e:
+                self.log(f"[basket] native drop failed ({e}) — falling back to tkdnd", "warn")
+                if HAS_DND:
+                    try:
+                        b.drop_target_register(DND_ALL)
+                        b.dnd_bind("<<Drop>>", self._basket_drop)
+                    except Exception as e2:
+                        self.log(f"[basket] tkdnd register: {e2}", "warn")
+        elif HAS_DND:
             def _reg_dnd(_e=None):
                 ok = 0
                 for tgt in (lbl, b):
