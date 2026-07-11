@@ -2151,12 +2151,14 @@ class App:
                 except Exception: pass
                 b._click_job = None
             self._restore_window()
-        for wdg in (b, lbl):
-            wdg.bind("<ButtonPress-1>", press); wdg.bind("<B1-Motion>", move)
-            wdg.bind("<ButtonRelease-1>", release)
-            wdg.bind("<Double-Button-1>", dbl)
-            wdg.bind("<Button-3>", lambda e: self._toggle_basket())
-            wdg.bind("<Button-2>", lambda e: self._toggle_basket())
+        # Bind on the TOPLEVEL only: label events reach it through bindtag
+        # propagation, so binding both widgets fired every handler TWICE —
+        # two stacked popups per click (the top one still blank).
+        b.bind("<ButtonPress-1>", press); b.bind("<B1-Motion>", move)
+        b.bind("<ButtonRelease-1>", release)
+        b.bind("<Double-Button-1>", dbl)
+        b.bind("<Button-3>", lambda e: self._toggle_basket())
+        b.bind("<Button-2>", lambda e: self._toggle_basket())
         b.deiconify()   # map first — DND must register on a LIVE NSView
         b.lift()
         b.update_idletasks()
@@ -2164,18 +2166,24 @@ class App:
         # withdrawn lands on a not-yet-created native view, silently does
         # nothing, and the OS then refuses every drop (drag snaps back).
         if HAS_DND:
-            ok = 0
-            for tgt in (lbl, b):
-                try:
-                    tgt.drop_target_register(DND_TEXT, DND_FILES)
-                    tgt.dnd_bind("<<Drop>>", self._basket_drop)
-                    ok += 1
-                except Exception as e:
-                    self.log(f"[basket] dnd register ({tgt.winfo_class()}): {e}", "warn")
-            if ok:
-                self.log("[basket] ready — drop links on the gold box or click it")
-            else:
-                self.log("[basket] drag-and-drop unavailable — drop links on the app's URL box instead", "warn")
+            def _reg_dnd(_e=None):
+                ok = 0
+                for tgt in (lbl, b):
+                    try:
+                        tgt.drop_target_register(DND_TEXT, DND_FILES)
+                        ok += 1
+                    except Exception as e:
+                        self.log(f"[basket] dnd register ({tgt.winfo_class()}): {e}", "warn")
+                try: b.dnd_bind("<<Drop>>", self._basket_drop)   # handler ONCE — lbl's event propagates here
+                except Exception: pass
+                if ok:
+                    self.log("[basket] ready — drop links on the gold box or click it")
+                else:
+                    self.log("[basket] drag-and-drop unavailable — drop links on the app's URL box instead", "warn")
+            _reg_dnd()
+            # Native views can be (re)created at map time — register again then,
+            # or the OS never learns this window accepts drags.
+            b.bind("<Map>", _reg_dnd, add="+")
         self._basket = b
         # Self-check: on some macOS/Tk combos the styled panel never maps or
         # never receives events. If it isn't viewable shortly after deiconify,
@@ -2232,6 +2240,7 @@ class App:
     def _quick_add(self, urls):
         self.log("[basket] add popup opening")
         w = tk.Toplevel(self.root); w.title("Add download")
+        w.withdraw()   # build everything FIRST — mapping an empty toplevel painted a white box
         w.configure(bg=T["BG"]); w.attributes("-topmost", True)
         # Open NEXT TO the basket (that's where the user's eyes/mouse are),
         # clamped on-screen; fall back to center when the basket is off.
@@ -2316,6 +2325,10 @@ class App:
         ttk.Button(btns, text="↓ Download now", style="Main.TButton", command=dl_now).pack(side="left")
         ttk.Button(btns, text="Add only", style="Ghost.TButton", command=queue_only).pack(side="left", padx=(8, 0))
         ttk.Button(btns, text="Cancel", style="Ghost.TButton", command=w.destroy).pack(side="right")
+        w.deiconify()   # fully built — now show, painted in one shot
+        try:
+            w.lift(); w.focus_force(); w.update_idletasks()
+        except Exception: pass
 
     # ── Licensing (Free + Pro) ──────────────────────────────────────────
     def is_pro(self):
