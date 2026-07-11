@@ -49,7 +49,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.7"
+APP_VER     = "6.6.8"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -4091,54 +4091,95 @@ class App:
         threading.Thread(target=self._update_ytdlp_silent, daemon=True).start()
 
     # ── One-click updater (Settings → "Check & Update Now") ─────────────
+    @staticmethod
+    def _ver_tuple(v):
+        try: return tuple(int(x) for x in re.findall(r"\d+", v)[:4])
+        except Exception: return (0,)
+
     def _update_now(self):
         if getattr(self, "_updating", False):
-            self.log("[update] already downloading — check the log"); return
+            messagebox.showinfo(APP_NAME, "An update is already downloading — progress is in the log.")
+            return
         self._updating = True
-        threading.Thread(target=self._update_now_worker, daemon=True).start()
+        self._mq.put(("status", "Checking for updates…"))
+        self.log("[update] checking latest version…")
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
 
-    def _update_now_worker(self):
+    def _update_check_worker(self):
+        latest, err = "", ""
         try:
-            self.log("[update] checking latest version…")
-            try:
-                body = self._http_get(
-                    "https://api-relay-2.zhmotionspanel.workers.dev/api.php?action=app_version&app=zhdownloader",
-                    "application/json")
-                data = json.loads(body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body))
-                latest = str(data.get("version", "")).strip()
-            except Exception as e:
-                self.log(f"[update] version check failed: {e}"); return
-            def _t(v):
-                try: return tuple(int(x) for x in re.findall(r"\d+", v)[:4])
-                except Exception: return (0,)
-            if not latest or _t(latest) <= _t(APP_VER):
-                self.log(f"[update] you're on the latest version (v{APP_VER}) ✓"); return
+            body = self._http_get(
+                "https://api-relay-2.zhmotionspanel.workers.dev/api.php?action=app_version&app=zhdownloader",
+                "application/json")
+            data = json.loads(body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body))
+            latest = str(data.get("version", "")).strip()
+        except Exception as e:
+            err = str(e)
+        # All dialogs on the Tk thread — the button click must always end in
+        # something VISIBLE (it used to only write to the log, which reads as
+        # "stuck, nothing happened" from the Settings tab).
+        def ui():
+            if err or not latest:
+                self._updating = False
+                self._mq.put(("status", ""))
+                messagebox.showwarning(APP_NAME, "Couldn't check for updates.\n"
+                                       f"{err or 'No version info from the server.'}\n\n"
+                                       "Check your internet connection and try again.")
+                return
+            if self._ver_tuple(latest) <= self._ver_tuple(APP_VER):
+                self._updating = False
+                self._mq.put(("status", ""))
+                self.log(f"[update] you're on the latest version (v{APP_VER}) ✓")
+                messagebox.showinfo(APP_NAME, f"You're up to date ✓\n\nZH Downloader v{APP_VER} is the latest version.")
+                return
+            if messagebox.askyesno(APP_NAME,
+                    f"Update available: v{latest}\nYou're on v{APP_VER}\n\n"
+                    "Download the installer now? (~100 MB — takes a minute or two)"):
+                self._mq.put(("status", f"Downloading v{latest} installer…"))
+                threading.Thread(target=self._update_download_worker, args=(latest,), daemon=True).start()
+            else:
+                self._updating = False
+                self._mq.put(("status", ""))
+        self.root.after(0, ui)
+
+    def _update_download_worker(self, latest):
+        try:
             self.log(f"[update] v{latest} available — downloading installer…")
             if sys.platform == "darwin":
                 url, fname = "https://zhmotions.com/downloader/ZHDownloader-macOS.pkg", f"ZHDownloader-{latest}.pkg"
             elif os.name == "nt":
                 url, fname = "https://zhmotions.com/downloader/ZHDownloader-Setup.msi", f"ZHDownloader-Setup-{latest}.msi"
             else:
-                self.log("[update] auto-install unsupported here — get it from zhmotions.com/downloader"); return
+                self.root.after(0, lambda: messagebox.showinfo(APP_NAME,
+                    "Auto-install isn't supported on this OS — get it from zhmotions.com/downloader"))
+                return
             dest = Path.home() / "Downloads" / fname
-            # curl streams the big installer reliably (same firewall logic as _http_get)
             p = subprocess.run(["curl", "-fSL", "--retry", "2", "-m", "600", "-A", _UA,
                                 "-o", str(dest), url], capture_output=True, **_SUBPROCESS_HIDE)
             if p.returncode != 0 or not dest.exists() or dest.stat().st_size < 5_000_000:
-                self.log("[update] download failed — get it manually from zhmotions.com/downloader")
                 try: dest.unlink(missing_ok=True)
                 except Exception: pass
+                self.log("[update] download failed")
+                self.root.after(0, lambda: messagebox.showwarning(APP_NAME,
+                    "The download failed.\n\nGet the installer manually from\nzhmotions.com/downloader"))
                 return
-            self.log(f"[update] downloaded {dest.name} ({dest.stat().st_size//1048576} MB) — opening installer")
-            self.log("[update] finish the installer, then reopen ZH Downloader")
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", str(dest)])
-            else:
-                os.startfile(str(dest))  # noqa — Windows only
+            mb = dest.stat().st_size // 1048576
+            self.log(f"[update] downloaded {dest.name} ({mb} MB) — opening installer")
+            def done():
+                messagebox.showinfo(APP_NAME,
+                    f"Installer downloaded ({mb} MB) ✓\n\n"
+                    "It will open now — finish the install, then reopen ZH Downloader.")
+                try:
+                    if sys.platform == "darwin": subprocess.Popen(["open", str(dest)])
+                    else: os.startfile(str(dest))  # noqa — Windows only
+                except Exception as e:
+                    messagebox.showwarning(APP_NAME, f"Open it from your Downloads folder: {dest.name}\n({e})")
+            self.root.after(0, done)
         except Exception as e:
             self.log(f"[update] {e}")
         finally:
             self._updating = False
+            self._mq.put(("status", ""))
 
     def _http_get(self, url, accept="*/*"):
         """GET a URL, returning bytes. Tries curl FIRST.
