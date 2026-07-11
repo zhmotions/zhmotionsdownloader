@@ -64,6 +64,12 @@ jobs:
           echo "path=$p" >> $env:GITHUB_OUTPUT
           dir $p
 
+      - name: Fetch QuickJS runtime (Facebook/YouTube JS challenges)
+        shell: pwsh
+        run: |
+          curl.exe -fsSL -o qjs.exe https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-windows-x86_64.exe
+          dir qjs.exe
+
       - name: Build EXE
         shell: pwsh
         run: |
@@ -78,6 +84,7 @@ jobs:
             --collect-all tkinterdnd2 `
             --collect-all pystray `
             --collect-all PIL `
+            --add-binary "qjs.exe;." `
             --hidden-import pystray._darwin `
             --hidden-import pystray._win32 `
             --hidden-import pystray._base `
@@ -98,7 +105,7 @@ jobs:
           $env:Path = "$WIX;$env:Path"
           candle.exe -nologo -arch x64 `
             -dAppName="ZH Downloader" `
-            -dAppVersion="6.6.9" `
+            -dAppVersion="6.6.10" `
             -dAppAuthor="ZH Motions" `
             -dExePath="dist\ZHDownloader.exe" `
             -dIconPath="assets\AppIcon.ico" `
@@ -231,7 +238,7 @@ jobs:
             --root "$PKG_ROOT" \
             --scripts "$SCR" \
             --identifier "com.zhmotions.downloader" \
-            --version "6.6.9" \
+            --version "6.6.10" \
             --install-location "/" \
             "$COMP_DIR/component.pkg"
           cat > "$COMP_DIR/dist.xml" << 'DISTEOF'
@@ -244,14 +251,14 @@ jobs:
             <choices-outline><line choice="default"><line choice="com.zhmotions.downloader"/></line></choices-outline>
             <choice id="default"/>
             <choice id="com.zhmotions.downloader" visible="false"><pkg-ref id="com.zhmotions.downloader"/></choice>
-            <pkg-ref id="com.zhmotions.downloader" version="6.6.9" onConclusion="none">component.pkg</pkg-ref>
+            <pkg-ref id="com.zhmotions.downloader" version="6.6.10" onConclusion="none">component.pkg</pkg-ref>
           </installer-gui-script>
           DISTEOF
           productbuild \
             --distribution "$COMP_DIR/dist.xml" \
             --package-path "$COMP_DIR" \
             --resources "$RES_DIR" \
-            --version "6.6.9" \
+            --version "6.6.10" \
             "ZHDownloader-macOS.pkg"
 
       - name: Publish macOS assets to Release (on tag)

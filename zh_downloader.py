@@ -49,7 +49,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.9"
+APP_VER     = "6.6.10"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -3153,6 +3153,7 @@ class App:
                                            if self.sub_var.get() else []),
             "writethumbnail":             self.thumb_var.get(),
             "ignoreerrors":               True,
+            "js_runtimes":                _js_runtimes_opt(),
             "progress_hooks":             [hook],
             "postprocessor_hooks":        [pp_hook],
             "logger":                     _Log(self),
@@ -3168,13 +3169,19 @@ class App:
             },
             "youtube_include_dash_manifest": True,
             "format_sort":                ["res", "fps", "vcodec:h264", "acodec:aac", "size", "br"],
-            "http_headers": {
+            # Custom headers ONLY for raw sniffed streams (Artgrid/Artlist m3u8 —
+            # their CDNs demand the page Referer). On extractor sites the pinned
+            # stale Chrome/122 UA made Facebook serve markup the extractor can't
+            # read ("Cannot parse data" even with perfect cookies) — yt-dlp's own
+            # per-site UA handling is strictly better there.
+            "http_headers": ({
                 "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Accept": "*/*",
                 "Referer": self._referers.get(url, url) or url,
                 "Origin":  "/".join(url.split("/")[:3]) if url and url.startswith("http") else "",
-            },
+            } if re.search(r"\.(m3u8|mpd|mp4|ts|m4s|webm|mov|mkv)(\?|$)", url or "", re.I)
+              else {"Accept-Language": "en-US,en;q=0.9"}),
             "geo_bypass":                 True,
             "age_limit":                  99,
             "hls_prefer_native":          False,
@@ -4453,6 +4460,28 @@ class _Log:
     def info(self,m):    self.a.log(m)
     def warning(self,m): self.a.log(f"[warn] {m}")
     def error(self,m):   self.a.log(f"[error] {m}")
+
+
+def _js_runtimes_opt():
+    """yt-dlp needs a JavaScript runtime for Facebook/YouTube extraction now.
+    Prefer the bundled QuickJS (2 MB, shipped in the app); fall back to any
+    system deno/node. Without this, cookie-perfect Facebook runs still died
+    with "Cannot parse data" because no runtime was configured at all."""
+    rt = {}
+    dirs = []
+    if hasattr(sys, "_MEIPASS"): dirs.append(Path(sys._MEIPASS))
+    if getattr(sys, "frozen", False): dirs.append(Path(sys.executable).parent)
+    dirs.append(Path(__file__).resolve().parent / "vendor")
+    for d in dirs:
+        for n in ("qjs", "qjs.exe", "qjs-darwin"):
+            p = d / n
+            if p.exists():
+                rt["quickjs"] = {"path": str(p)}
+                break
+        if rt: break
+    rt.setdefault("deno", {})
+    rt.setdefault("node", {})
+    return rt
 
 
 def _prepend_bundled_bins_to_path():
