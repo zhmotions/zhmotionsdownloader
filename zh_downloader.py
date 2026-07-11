@@ -33,7 +33,7 @@ except ImportError:
     HAS_PIL = False
 
 try:
-    from tkinterdnd2 import TkinterDnD, DND_TEXT, DND_FILES
+    from tkinterdnd2 import TkinterDnD, DND_TEXT, DND_FILES, DND_ALL
     HAS_DND = True
 except ImportError:
     HAS_DND = False
@@ -825,7 +825,7 @@ class App:
         # Drag-drop URLs (text or files) onto url_box
         if HAS_DND:
             try:
-                self.url_box.drop_target_register(DND_TEXT, DND_FILES)
+                self.url_box.drop_target_register(DND_ALL)
                 self.url_box.dnd_bind("<<Drop>>", self._on_dnd_drop)
             except Exception as e:
                 pass
@@ -1645,12 +1645,52 @@ class App:
             g.create_line(pts, fill=T["ACCENT"], width=1.5, smooth=True)
 
     # -- bridge -------------------------------------------------------------
+    def _kill_port_holder(self, port):
+        """Kill whatever old ZH Downloader instance is squatting on the bridge
+        port. Windows MSI upgrades don't close the running app, and autostart
+        relaunches old versions — the stale instance kept the port, the new
+        app silently ran WITHOUT a bridge, and every extension click died in
+        a 'app not running' notification."""
+        me = os.getpid()
+        try:
+            if os.name == "nt":
+                out = subprocess.run(["netstat", "-ano"], capture_output=True,
+                                     text=True, **_SUBPROCESS_HIDE).stdout
+                for ln in out.splitlines():
+                    if f":{port}" in ln and "LISTENING" in ln:
+                        pid = int(ln.split()[-1])
+                        if pid != me:
+                            subprocess.run(["taskkill", "/PID", str(pid), "/F"],
+                                           capture_output=True, **_SUBPROCESS_HIDE)
+                            self.log(f"[bridge] closed old instance (pid {pid})")
+            else:
+                out = subprocess.run(["lsof", "-ti", f"tcp:{port}"],
+                                     capture_output=True, text=True).stdout
+                for tok in out.split():
+                    pid = int(tok)
+                    if pid != me:
+                        try:
+                            os.kill(pid, 9)
+                            self.log(f"[bridge] closed old instance (pid {pid})")
+                        except Exception: pass
+        except Exception as e:
+            self.log(f"[bridge] takeover failed: {e}", "warn")
+
     def _start_bridge(self):
         Bridge.app = self
-        try:
-            srv = ThreadingHTTPServer(("127.0.0.1",BRIDGE_PORT), Bridge)
-        except OSError as e:
-            self.log(f"[warn] bridge unavailable ({e})"); return
+        srv = None
+        for attempt in (1, 2, 3):
+            try:
+                srv = ThreadingHTTPServer(("127.0.0.1", BRIDGE_PORT), Bridge)
+                break
+            except OSError:
+                if attempt == 1:
+                    self.log("[bridge] port busy — an old ZH Downloader is still running; taking the port over")
+                    self._kill_port_holder(BRIDGE_PORT)
+                time.sleep(0.7)
+        if srv is None:
+            self.log("[warn] bridge unavailable — quit the other ZH Downloader (check the system tray) and reopen this app", "warn")
+            return
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.log(f"[bridge] http://127.0.0.1:{BRIDGE_PORT}")
         self._mq.put(("bridge_ok",None))
@@ -1750,6 +1790,16 @@ class App:
                     self._on_done()
                 elif kind=="bridge_ok":
                     self._dot.configure(fg=T["GREEN"], text="● Bridge")
+                elif kind=="basket_click":
+                    self._basket_click()
+                elif kind=="basket_drop":
+                    self._native_basket_drop(payload)
+                elif kind=="basket_show":
+                    self._restore_window()
+                elif kind=="basket_toggle":
+                    self._toggle_basket()
+                elif kind=="basket_xy":
+                    self._native_basket_save_xy(*payload)
                 elif kind=="ext_url":
                     self._recv_ext(payload)
                 elif kind=="hist_add":
@@ -2061,17 +2111,161 @@ class App:
         ttk.Button(foot, text="↓ Download selected", style="Main.TButton", command=go).pack(side="right")
 
     # ── Floating drop basket (IDM-style drop target) ─────────────────────
+    def _basket_alive(self):
+        nb = getattr(self, "_nbasket", None)
+        if nb is not None:
+            try: return bool(nb.isVisible())
+            except Exception: return False
+        tb = getattr(self, "_basket", None)
+        return bool(tb and tb.winfo_exists())
+
     def _toggle_basket(self):
-        if getattr(self, "_basket", None) and self._basket.winfo_exists():
-            self._basket.destroy(); self._basket = None
+        if self._basket_alive():
+            nb = getattr(self, "_nbasket", None)
+            if nb is not None:
+                try: nb.orderOut_(None)
+                except Exception: pass
+                self._nbasket = None
+            tb = getattr(self, "_basket", None)
+            if tb and tb.winfo_exists(): tb.destroy()
+            self._basket = None
             self.cfg["basket"] = False
         else:
             self._make_basket()
             self.cfg["basket"] = True
         jsave(CFG_PATH, self.cfg)
 
+    def _make_native_basket(self):
+        """Real AppKit floating panel (macOS). Tk-free: OS-level drag-drop via
+        NSDraggingDestination, clicks via mouseDown — the APIs every native
+        app uses. Callbacks hop back into Tk with root.after (same thread:
+        Tk and AppKit share the main runloop on macOS)."""
+        import objc
+        from AppKit import (NSPanel, NSView, NSColor, NSTextField, NSFont,
+                            NSBackingStoreBuffered, NSMakeRect,
+                            NSFloatingWindowLevel, NSDragOperationCopy,
+                            NSWindowStyleMaskBorderless)
+        app = self
+
+        if getattr(App, "_ZHDropViewCls", None) is None:
+            class _ZHDropView(NSView):
+                def initWithFrame_(self, frame):
+                    zelf = objc.super(_ZHDropView, self).initWithFrame_(frame)
+                    if zelf is None: return None
+                    zelf.registerForDraggedTypes_([
+                        "public.url", "public.file-url",
+                        "public.utf8-plain-text", "NSStringPboardType",
+                        "Apple URL pasteboard type"])
+                    zelf._moved = False
+                    return zelf
+                # ── drag destination ──
+                def draggingEntered_(self, sender):
+                    return NSDragOperationCopy
+                def prepareForDragOperation_(self, sender):
+                    return True
+                def performDragOperation_(self, sender):
+                    try:
+                        pb = sender.draggingPasteboard()
+                        txt = ""
+                        for t in ("public.url", "public.file-url",
+                                  "public.utf8-plain-text", "NSStringPboardType",
+                                  "Apple URL pasteboard type"):
+                            v = pb.stringForType_(t)
+                            if v: txt = str(v); break
+                        if not txt:
+                            arr = pb.propertyListForType_("NSURLPboardType")
+                            if arr: txt = str(arr[0] if isinstance(arr, (list, tuple)) else arr)
+                        app._mq.put(("basket_drop", txt))
+                    except Exception:
+                        pass
+                    return True
+                # ── click / drag-to-move ──
+                def mouseDown_(self, ev):
+                    self._moved = False
+                    self._downOrigin = self.window().frame().origin
+                    self._downLoc = ev.locationInWindow()
+                def mouseDragged_(self, ev):
+                    try:
+                        w = self.window()
+                        sc = ev.locationInWindow()
+                        dx = sc.x - self._downLoc.x; dy = sc.y - self._downLoc.y
+                        if abs(dx) > 4 or abs(dy) > 4: self._moved = True
+                        if self._moved:
+                            f = w.frame()
+                            w.setFrameOrigin_((f.origin.x + dx, f.origin.y + dy))
+                    except Exception: pass
+                def mouseUp_(self, ev):
+                    try:
+                        if ev.clickCount() >= 2:
+                            app._mq.put(("basket_show", None)); return
+                        if not self._moved:
+                            app._mq.put(("basket_click", None))
+                        else:
+                            f = self.window().frame()
+                            app._mq.put(("basket_xy", (int(f.origin.x), int(f.origin.y))))
+                    except Exception: pass
+                def rightMouseDown_(self, ev):
+                    app._mq.put(("basket_toggle", None))
+            App._ZHDropViewCls = _ZHDropView
+
+        # panel geometry: cfg stores Tk coords (top-left origin); AppKit is bottom-left
+        from AppKit import NSScreen
+        scr = NSScreen.mainScreen().frame()
+        tx, ty = self.cfg.get("basket_xy", [int(scr.size.width) - 130, 90])
+        nx, ny = float(tx), float(scr.size.height - ty - 74)
+        panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(nx, ny, 74, 74), NSWindowStyleMaskBorderless,
+            NSBackingStoreBuffered, False)
+        panel.setLevel_(NSFloatingWindowLevel)
+        panel.setBackgroundColor_(NSColor.colorWithCalibratedRed_green_blue_alpha_(
+            0.83, 0.63, 0.09, 0.95))   # brand gold
+        panel.setHasShadow_(True)
+        panel.setHidesOnDeactivate_(False)
+        panel.setBecomesKeyOnlyIfNeeded_(True)
+        view = App._ZHDropViewCls.alloc().initWithFrame_(NSMakeRect(0, 0, 74, 74))
+        lbl = NSTextField.labelWithString_("\u2b07")
+        lbl.setFont_(NSFont.boldSystemFontOfSize_(34))
+        lbl.setTextColor_(NSColor.blackColor())
+        lbl.sizeToFit()
+        lf = lbl.frame()
+        lbl.setFrameOrigin_(((74 - lf.size.width) / 2, (74 - lf.size.height) / 2))
+        view.addSubview_(lbl)
+        panel.setContentView_(view)
+        panel.orderFrontRegardless()
+        self._nbasket = panel
+        self._basket = None
+        self.log("[basket] native panel ready — drag links onto it or click it")
+
+    def _native_basket_drop(self, txt):
+        self.log("[basket] drop received (native)")
+        urls = [u for u in URL_RE.findall(txt or "") if not u.startswith(("blob:", "data:"))]
+        if not urls:
+            self.log("[basket] no URL in drop", "warn"); return
+        if sys.platform == "darwin":
+            try: subprocess.Popen(["open", "-b", "com.zhmotions.downloader"])
+            except Exception: pass
+        self._quick_add(urls)
+
+    def _native_basket_save_xy(self, x, y):
+        try:
+            from AppKit import NSScreen
+            sh = NSScreen.mainScreen().frame().size.height
+            self.cfg["basket_xy"] = [int(x), int(sh - y - 74)]
+            jsave(CFG_PATH, self.cfg)
+        except Exception: pass
+
     def _make_basket(self, plain=None):
-        # macOS DEFAULTS to the plain titled mini window: field logs proved the
+        # macOS: NATIVE AppKit panel first — Tk's drag-and-drop (tkdnd) proved
+        # completely dead on this OS (registered, mapped, zero events), and
+        # borderless Tk windows get no mouse events either. The pyobjc panel
+        # uses the same NSDraggingDestination API every real Mac app uses.
+        if sys.platform == "darwin" and plain is None:
+            try:
+                self._make_native_basket()
+                return
+            except Exception as e:
+                self.log(f"[basket] native panel failed ({e}) — using Tk window", "warn")
+        # macOS Tk fallback DEFAULTS to the plain titled mini window: field logs proved the
         # styled NSPanel maps and registers ([basket] ready/visible) yet never
         # receives a single mouse event on some systems — visible but dead.
         # A normal titled window is the same class as the main window, which
@@ -2170,7 +2364,7 @@ class App:
                 ok = 0
                 for tgt in (lbl, b):
                     try:
-                        tgt.drop_target_register(DND_TEXT, DND_FILES)
+                        tgt.drop_target_register(DND_ALL)   # '*': URL-only drags don't match text/files types
                         ok += 1
                     except Exception as e:
                         self.log(f"[basket] dnd register ({tgt.winfo_class()}): {e}", "warn")
@@ -2238,6 +2432,20 @@ class App:
 
     # ── IDM-style quick-add popup ────────────────────────────────────────
     def _quick_add(self, urls):
+        # Singleton: a second basket click/drop REFRESHES the open popup with
+        # the new link instead of stacking another window (the old one kept
+        # showing the first link forever).
+        qa = getattr(self, "_qa", None)
+        if qa and qa.get("win") is not None:
+            try:
+                if qa["win"].winfo_exists():
+                    if urls and urls[0]:
+                        qa["uvar"].set(urls[0])
+                    qa["win"].lift(); qa["win"].focus_force()
+                    self.log("[basket] popup refreshed with the new link")
+                    return
+            except Exception:
+                pass
         self.log("[basket] add popup opening")
         w = tk.Toplevel(self.root); w.title("Add download")
         w.withdraw()   # build everything FIRST — mapping an empty toplevel painted a white box
@@ -2325,6 +2533,8 @@ class App:
         ttk.Button(btns, text="↓ Download now", style="Main.TButton", command=dl_now).pack(side="left")
         ttk.Button(btns, text="Add only", style="Ghost.TButton", command=queue_only).pack(side="left", padx=(8, 0))
         ttk.Button(btns, text="Cancel", style="Ghost.TButton", command=w.destroy).pack(side="right")
+        self._qa = {"win": w, "uvar": uvar}
+        w.bind("<Destroy>", lambda e: setattr(self, "_qa", None), add="+")
         w.deiconify()   # fully built — now show, painted in one shot
         try:
             w.lift(); w.focus_force(); w.update_idletasks()
