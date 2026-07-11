@@ -2070,7 +2070,14 @@ class App:
             self.cfg["basket"] = True
         jsave(CFG_PATH, self.cfg)
 
-    def _make_basket(self, plain=False):
+    def _make_basket(self, plain=None):
+        # macOS DEFAULTS to the plain titled mini window: field logs proved the
+        # styled NSPanel maps and registers ([basket] ready/visible) yet never
+        # receives a single mouse event on some systems — visible but dead.
+        # A normal titled window is the same class as the main window, which
+        # demonstrably gets clicks and drops. The tiny title bar is the price.
+        if plain is None:
+            plain = (sys.platform == "darwin")
         b = tk.Toplevel(self.root)
         b.withdraw()   # window class/flag changes must land BEFORE the first map
         # REBUILT (was overrideredirect on every platform): on macOS an
