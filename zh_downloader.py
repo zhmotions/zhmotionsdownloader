@@ -576,6 +576,13 @@ class Bridge(BaseHTTPRequestHandler):
         self.send_response(204); self._c(); self.end_headers()
     def do_GET(self):
         if self.path=="/ping":
+            # The extension's popup pings constantly — THAT is detection. It
+            # used to be marked only on the first actual send, so the app's
+            # dialog said "Not detected" even with the extension connected.
+            o = self.headers.get("Origin", "") or ""
+            if o.startswith(("chrome-extension://", "moz-extension://", "safari-web-extension://")):
+                try: type(self).app._ext_seen = True
+                except Exception: pass
             self.send_response(200); self._c()
             self.send_header("Content-Type","application/json"); self.end_headers()
             self.wfile.write(json.dumps({"app":APP_NAME,"version":APP_VER,"ok":True}).encode())
@@ -1998,10 +2005,16 @@ class App:
                           "(IDM style) and catches downloads from the browser."),
                  bg=T["BG"], fg=T["MUTED"], justify="left",
                  font=("Helvetica", 11)).pack(anchor="w", padx=16)
-        stat = "✅ Connected" if getattr(self, "_ext_seen", False) else "○ Not detected yet"
-        tk.Label(w, text=f"Status: {stat}", bg=T["BG"],
-                 fg=T["GREEN"] if getattr(self, "_ext_seen", False) else T["MUTED"],
-                 font=("Helvetica", 11, "bold")).pack(anchor="w", padx=16, pady=(8, 2))
+        stat_lbl = tk.Label(w, text="", bg=T["BG"], font=("Helvetica", 11, "bold"))
+        stat_lbl.pack(anchor="w", padx=16, pady=(8, 2))
+        def _stat_tick():
+            if not w.winfo_exists(): return
+            seen = getattr(self, "_ext_seen", False)
+            stat_lbl.configure(
+                text="Status: " + ("✅ Connected" if seen else "○ Not detected yet — open the extension popup once"),
+                fg=T["GREEN"] if seen else T["MUTED"])
+            w.after(1000, _stat_tick)
+        _stat_tick()
         fr = tk.Frame(w, bg=T["BG"]); fr.pack(fill="x", padx=16, pady=(10, 4))
         def open_store():
             webbrowser.open(EXT_STORE_URL or "https://zhmotions.com/downloader#extension")
