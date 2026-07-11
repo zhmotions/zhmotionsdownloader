@@ -49,7 +49,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.8"
+APP_VER     = "6.6.9"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -3246,6 +3246,13 @@ class App:
                 if _is_cookie_err(emsg) and "cookiesfrombrowser" in opts:
                     self.log("[warn] cookie read failed — retrying without cookies")
                     opts2 = dict(opts); opts2.pop("cookiesfrombrowser", None)
+                    _try(opts2)
+                elif ("cannot parse" in emsg or "login required" in emsg or "log in" in emsg) \
+                        and "facebook" in url.lower() and "cookiesfrombrowser" not in opts:
+                    # Facebook's markup only parses for logged-in sessions these
+                    # days — a cookie-less run dies with "Cannot parse data".
+                    self.log("[warn] Facebook needs login cookies — retrying with Chrome cookies (stay logged in to facebook.com in Chrome)")
+                    opts2 = dict(opts); opts2["cookiesfrombrowser"] = ("chrome",)
                     _try(opts2)
                 else: raise
             except Exception as e:

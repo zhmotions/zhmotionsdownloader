@@ -716,6 +716,7 @@
     if (!items || !items.length) return null;
     var score = function (it) {
       var u = (it.url || "").toLowerCase(), t = (it.type || "").toLowerCase();
+      if (/video\.twimg\.com|fbcdn\.net|googlevideo\.com/.test(u)) return 0; // extractor sites' CDNs — page URL handles these
       // HLS master playlist beats a variant playlist: the master holds ALL
       // renditions so the app can pick the highest (HD/4K/8K); a variant with a
       // res/bitrate token is a single quality — often the low autoplay preview.
@@ -756,7 +757,12 @@
     }
     try {
       chrome.runtime.sendMessage({ type: "ZH_GET_TAB" }, function (resp) {
-        var sn = pickSniffed(resp && resp.items);
+        // Sniffed streams ONLY where yt-dlp has no extractor (Artlist/Artgrid/
+        // Pinterest). On X/Facebook/YouTube etc the sniffer catches variant
+        // playlists (e.g. video.twimg.com .../mp4a/128000/... = AUDIO-only)
+        // and downloads went wrong — the page URL is what yt-dlp needs there.
+        var SNIFF_FIRST = /(artlist\.io|artgrid\.io|pinterest\.)/i.test(location.hostname);
+        var sn = SNIFF_FIRST ? pickSniffed(resp && resp.items) : null;
         var url = sn ? sn.url : videoUrlFor(curVid);
         var ref = location.href;
         chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: url, referer: ref, fmt: fmt || "", title: cleanTitle() }, function (r) {
