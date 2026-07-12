@@ -17,7 +17,19 @@ from tkinter import ttk, filedialog, messagebox
 
 # Auto-update: prefer newer yt-dlp wheel cached in user dir over bundled
 _YTDLP_USER_CACHE = Path.home() / ".zhdownloader-ytdlp"
-if (_YTDLP_USER_CACHE / "yt_dlp").exists():
+# The bundled yt-dlp is built from MASTER (its version string equals the last
+# stable), so a cached STABLE of the same number would shadow newer code with
+# older, broken extractors (Facebook…). Cache wins only if STRICTLY newer.
+_YTDLP_BUNDLED_VER = (2026, 7, 4)
+def _ytdlp_cache_is_newer():
+    try:
+        t = (_YTDLP_USER_CACHE / "yt_dlp" / "version.py").read_text()
+        import re as _re
+        v = _re.search(r"__version__\s*=\s*'([^']+)'", t).group(1)
+        return tuple(int(x) for x in _re.findall(r"\d+", v))[:3] > _YTDLP_BUNDLED_VER
+    except Exception:
+        return False
+if (_YTDLP_USER_CACHE / "yt_dlp").exists() and _ytdlp_cache_is_newer():
     sys.path.insert(0, str(_YTDLP_USER_CACHE))
 
 try:
@@ -49,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.10"
+APP_VER     = "6.6.11"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
