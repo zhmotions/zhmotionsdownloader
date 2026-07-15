@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.14"
+APP_VER     = "6.6.15"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1283,7 +1283,7 @@ class App:
 
         # Auto-categorize
         self.cat_var = tk.BooleanVar(value=self.cfg.get("categorize", False))
-        self._add_setting(body, 3, "Auto-organize into Video / Audio / Documents folders",
+        self._add_setting(body, 3, "Auto-organize into site folders (YouTube / Facebook / Artgrid …)",
             lambda r: ttk.Checkbutton(r, variable=self.cat_var,
                 command=lambda: self._save_setting("categorize", self.cat_var.get())))
 
@@ -4159,7 +4159,7 @@ class App:
             ("",   "• Theme: Light/Cream/Sunset/Midnight/Forest/Mono Dark\n"
                    "• Concurrent downloads: 1-5 parallel\n"
                    "• Speed limit: KB/s throttle\n"
-                   "• Auto-categorize: organize to Video/Audio folders\n"
+                   "• Auto-organize: per-site folders (YouTube / Artgrid …)\n"
                    "• Conflict: rename / overwrite / skip / ask\n\n"),
             ("h1", "Need more help?"),
             ("",   "Ask in your ZH Motions community group.\n"

@@ -8,7 +8,7 @@ cd /d "%~dp0"
 
 set APP_NAME=ZHDownloader
 set APP_DISPLAY=ZH Downloader
-set APP_VERSION=6.6.14
+set APP_VERSION=6.6.15
 set APP_AUTHOR=ZH Motions
 set PY_SCRIPT=zh_downloader.py
 set ICON=assets\AppIcon.ico
