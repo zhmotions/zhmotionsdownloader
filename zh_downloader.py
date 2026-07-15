@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.13"
+APP_VER     = "6.6.14"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -205,6 +205,36 @@ def categorize(filename):
     ext = Path(filename).suffix.lower()
     for cat, exts in CATEGORIES.items():
         if ext in exts: return cat
+    return "Other"
+
+# Folder-organize by SITE (user request: "YouTube-er jonno YouTube folder, Artgrid alada").
+# The old extension-based categorize() put EVERY video in Video/ — and at download start the
+# name often has no extension yet, so YouTube videos landed in "Other".
+SITE_FOLDERS = (
+    ("youtube.com", "YouTube"), ("youtu.be", "YouTube"), ("googlevideo", "YouTube"),
+    ("facebook.com", "Facebook"), ("fb.watch", "Facebook"), ("fbcdn", "Facebook"),
+    ("instagram.com", "Instagram"), ("cdninstagram", "Instagram"),
+    ("tiktok.com", "TikTok"),
+    ("x.com", "Twitter"), ("twitter.com", "Twitter"), ("twimg", "Twitter"),
+    ("pinterest", "Pinterest"), ("pin.it", "Pinterest"), ("pinimg", "Pinterest"),
+    ("artgrid", "Artgrid"), ("artlist", "Artlist"),
+    ("vimeo", "Vimeo"), ("dailymotion", "Dailymotion"),
+    ("drive.google.com", "GoogleDrive"), ("dropbox.com", "Dropbox"), ("mega.nz", "Mega"),
+)
+def site_folder(url, referer=""):
+    """Folder name for a download: known site → its name; else the domain (Capitalized); else Other.
+    Sniffed CDN streams carry no site in the URL — the page referer identifies them."""
+    blob = f"{url} {referer}".lower()
+    for key, name in SITE_FOLDERS:
+        if key in blob: return name
+    for src in (url, referer):
+        try:
+            host = urllib.parse.urlparse(src).netloc.lower().replace("www.", "")
+            parts = [p for p in host.split(".") if p]
+            if len(parts) >= 2 and not re.fullmatch(r"[\d.]+", host):
+                return parts[-2].capitalize()
+        except Exception:
+            pass
     return "Other"
 
 # -- Helpers ----------------------------------------------------------------
@@ -3085,7 +3115,9 @@ class App:
     def _run_download_only(self, item, out, fk):
         """Phase 1: yt-dlp download only. Transcode deferred to _postprocess."""
         if self.cfg.get("categorize", False):
-            cat = categorize(item.name)
+            # SITE-based folders (YouTube/, Artgrid/, …) — extension-based categorize() ran before
+            # the file existed, so almost everything fell into "Other".
+            cat = site_folder(item.url, getattr(item, "referer", "") or "")
             out = str(Path(out) / cat)
             Path(out).mkdir(parents=True, exist_ok=True)
         # Stash out dir on item for postprocess phase
