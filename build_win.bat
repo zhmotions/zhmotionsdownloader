@@ -8,7 +8,7 @@ cd /d "%~dp0"
 
 set APP_NAME=ZHDownloader
 set APP_DISPLAY=ZH Downloader
-set APP_VERSION=1.1.0
+set APP_VERSION=6.6.12
 set APP_AUTHOR=ZH Motions
 set PY_SCRIPT=zh_downloader.py
 set ICON=assets\AppIcon.ico
@@ -25,16 +25,30 @@ pip install --quiet --upgrade pip
 pip install --quiet -r requirements.txt
 pip install --quiet pyinstaller
 
-echo ==^> 3/5 Locate ffmpeg
-where ffmpeg >nul 2>&1
-if %errorlevel%==0 (
-  for /f "delims=" %%i in ('where ffmpeg') do set FFMPEG_BIN=%%i
-  echo     Using %FFMPEG_BIN%
-  set ADD_BINARY=--add-binary "%FFMPEG_BIN%;."
+echo ==^> 3/5 Locate ffmpeg  (bundled vendor\ffmpeg.exe wins, else PATH)
+set ADD_BINARY=
+if exist "vendor\ffmpeg.exe" (
+  echo     Using bundled vendor\ffmpeg.exe
+  set ADD_BINARY=--add-binary "vendor\ffmpeg.exe;."
 ) else (
-  echo     ffmpeg not found on PATH. Install via: choco install ffmpeg
-  echo     Build will continue without bundled ffmpeg.
-  set ADD_BINARY=
+  where ffmpeg >nul 2>&1
+  if %errorlevel%==0 (
+    for /f "delims=" %%i in ('where ffmpeg') do set FFMPEG_BIN=%%i
+    echo     Using %FFMPEG_BIN%
+    set ADD_BINARY=--add-binary "%FFMPEG_BIN%;."
+  ) else (
+    echo     [WARN] no ffmpeg — put a static build at vendor\ffmpeg.exe, or HD-merge/HLS/audio will FAIL on the user's PC.
+  )
+)
+
+REM QuickJS runtime — yt-dlp needs a JS engine for Facebook + YouTube (PoToken/n-challenge).
+REM Without it those sites return "no formats". The Mac spec bundles vendor\qjs; Windows needs qjs.exe.
+set ADD_QJS=
+if exist "vendor\qjs.exe" (
+  echo     Using bundled vendor\qjs.exe
+  set ADD_QJS=--add-binary "vendor\qjs.exe;."
+) else (
+  echo     [WARN] no vendor\qjs.exe — Facebook/YouTube downloads will FAIL. Drop a Windows qjs.exe in vendor\.
 )
 
 set ICON_OPT=
@@ -53,7 +67,9 @@ pyinstaller ^
   %ICON_OPT% ^
   %VERSION_OPT% ^
   --add-data "assets;assets" ^
+  --add-data "extension;extension" ^
   %ADD_BINARY% ^
+  %ADD_QJS% ^
   "%PY_SCRIPT%"
 
 if not exist "dist\%APP_NAME%.exe" (

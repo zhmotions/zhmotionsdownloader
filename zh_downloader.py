@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.11"
+APP_VER     = "6.6.12"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -105,9 +105,24 @@ def _device_id():
             m = _re.search(r'IOPlatformUUID" = "([^"]+)"', out)
             uid = m.group(1) if m else "unknown"
         else:
-            out = subprocess.run(["wmic","csproduct","get","UUID"],
-                                 capture_output=True, text=True).stdout
-            uid = "".join(out.split("\n")[1:]).strip() or "unknown"
+            # Windows: read the registry MachineGuid (stable per install, present on every Windows).
+            # wmic was REMOVED in Windows 11 24H2 / recent Win10 → the old `wmic csproduct get UUID`
+            # returned nothing → device_id collapsed to "unknown" for EVERY modern Windows user, so the
+            # Pro key's device binding collided across machines. registry has no such dependency.
+            uid = "unknown"
+            try:
+                import winreg
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as _k:
+                    uid = winreg.QueryValueEx(_k, "MachineGuid")[0] or "unknown"
+            except Exception:
+                try:   # last resort: CIM via PowerShell (wmic replacement)
+                    out = subprocess.run(["powershell","-NoProfile","-Command",
+                                          "(Get-CimInstance Win32_ComputerSystemProduct).UUID"],
+                                         capture_output=True, text=True,
+                                         creationflags=0x08000000).stdout
+                    uid = out.strip() or "unknown"
+                except Exception:
+                    uid = "unknown"
     except Exception:
         uid = "unknown"
     import hashlib as _h
@@ -1898,6 +1913,10 @@ class App:
         # (Artlist/Pinterest m3u8) that carry no metadata title of their own.
         if title: self._ext_titles[url] = title
         self.log(f"[bridge] {url[:80]}")
+        # Bring the window up so the user SEES the download land. It used to receive silently ("no window
+        # jump"), so on Windows a minimised/tray app looked like nothing happened after the extension's
+        # "Sent" — the classic "download click → Sent → but app-e ashe na, download hoy na" report.
+        self._restore_window()
         if self._is_running() and getattr(self, "_sem", None) is not None:
             # Live-enqueue into the running pool. Do NOT also add to url_box —
             # it is already downloading; re-adding doubles it on the next Start.
