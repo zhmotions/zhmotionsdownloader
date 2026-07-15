@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.12"
+APP_VER     = "6.6.13"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -613,6 +613,14 @@ class Bridge(BaseHTTPRequestHandler):
             self.send_response(200); self._c()
             self.send_header("Content-Type","application/json"); self.end_headers()
             self.wfile.write(json.dumps({"app":APP_NAME,"version":APP_VER,"ok":True}).encode())
+        elif self.path=="/show":
+            # A second launch (double-click / zhdownloader:// deep link) asks the running instance to
+            # come to the front, then exits — instead of killing it (which aborted live downloads).
+            try: type(self).app._mq.put(("basket_show", None))
+            except Exception: pass
+            self.send_response(200); self._c()
+            self.send_header("Content-Type","application/json"); self.end_headers()
+            self.wfile.write(b'{"ok":true}')
         else:
             self.send_response(404); self._c(); self.end_headers()
     def do_POST(self):
@@ -1459,6 +1467,12 @@ class App:
                 font=("Helvetica",10))
             self._empty_lbl.pack(pady=24); return
         for item in items: self._build_card(item)
+        # Re-apply each item's REAL status: _build_card renders the default ⏳ icon, so any rebuild
+        # (a live-enqueued new download re-lists everything) made FINISHED rows show "waiting" again —
+        # and a done item never gets another item_up event to correct it.
+        for item in items:
+            try: self._update_row(item)
+            except Exception: pass
 
     def _build_card(self, item):
         card = tk.Frame(self.q_frame, bg=T["SURF"], highlightthickness=1,
@@ -1719,6 +1733,20 @@ class App:
                 break
             except OSError:
                 if attempt == 1:
+                    # Who holds the port? A HEALTHY same-version instance means WE are the accidental
+                    # duplicate (double-click / zhdownloader:// relaunch) — surface it and exit quietly.
+                    # Killing it (the old behaviour) aborted its live downloads. Only a dead/old-version
+                    # holder gets killed and taken over (MSI upgrades leave the old app running).
+                    try:
+                        import urllib.request as _ur
+                        d = json.loads(_ur.urlopen(f"http://127.0.0.1:{BRIDGE_PORT}/ping",
+                                                   timeout=2).read().decode())
+                        if d.get("ok") and d.get("app") == APP_NAME and d.get("version") == APP_VER:
+                            try: _ur.urlopen(f"http://127.0.0.1:{BRIDGE_PORT}/show", timeout=2).read()
+                            except Exception: pass
+                            os._exit(0)   # duplicate launch — the real instance is now in front
+                    except Exception:
+                        pass
                     self.log("[bridge] port busy — an old ZH Downloader is still running; taking the port over")
                     self._kill_port_holder(BRIDGE_PORT)
                 time.sleep(0.7)
@@ -4530,12 +4558,30 @@ def _prepend_bundled_bins_to_path():
     if extra:
         os.environ["PATH"] = extra + sep + current
 
+def _register_url_scheme_windows():
+    """Register zhdownloader:// in HKCU at startup (Windows). The MSI writes this, but the
+    PORTABLE .exe never did — so with the app closed, the extension's zhdownloader:// launch
+    silently did nothing and queued downloads never arrived. HKCU needs no admin; re-writing
+    also repairs the path after the exe is moved."""
+    if os.name != "nt" or not getattr(sys, "frozen", False): return
+    try:
+        import winreg
+        base = winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\zhdownloader")
+        winreg.SetValueEx(base, None, 0, winreg.REG_SZ, "URL:ZH Downloader Protocol")
+        winreg.SetValueEx(base, "URL Protocol", 0, winreg.REG_SZ, "")
+        cmd = winreg.CreateKey(base, r"shell\open\command")
+        winreg.SetValueEx(cmd, None, 0, winreg.REG_SZ, f'"{sys.executable}" "%1"')
+        winreg.CloseKey(cmd); winreg.CloseKey(base)
+    except Exception:
+        pass
+
 def main():
     """Staged startup so any optional feature failure can't crash app."""
     global HAS_DND
 
     # Make bundled binaries findable (node for YouTube PoToken, etc)
     _prepend_bundled_bins_to_path()
+    _register_url_scheme_windows()
 
     # Build the root with TkinterDnD directly — it configures tkdnd's package
     # path itself and raises if the native library is missing, so it IS the
