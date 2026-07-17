@@ -105,7 +105,7 @@ jobs:
           $env:Path = "$WIX;$env:Path"
           candle.exe -nologo -arch x64 `
             -dAppName="ZH Downloader" `
-            -dAppVersion="6.6.15" `
+            -dAppVersion="6.6.16" `
             -dAppAuthor="ZH Motions" `
             -dExePath="dist\ZHDownloader.exe" `
             -dIconPath="assets\AppIcon.ico" `
@@ -182,6 +182,10 @@ jobs:
       - name: Register zhdownloader:// URL scheme
         run: |
           PLIST="dist/ZH Downloader.app/Contents/Info.plist"
+          # Stamp the REAL version — PyInstaller's CLI build leaves 0.0.0, which made installed
+          # apps unidentifiable and update checks look broken.
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 6.6.16" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string 6.6.16" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion 6.6.16" "$PLIST" 2>/dev/null || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string 6.6.16" "$PLIST"
           /usr/libexec/PlistBuddy -c "Delete :CFBundleURLTypes" "$PLIST" 2>/dev/null || true
           /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$PLIST"
@@ -234,11 +238,17 @@ jobs:
           SCR=$(mktemp -d)
           printf '#!/bin/sh\n/usr/bin/xattr -cr "/Applications/ZH Downloader.app" 2>/dev/null || true\nexit 0\n' > "$SCR/postinstall"
           chmod +x "$SCR/postinstall"
+          # NON-relocatable: without this, macOS Installer "upgrades" whichever OTHER copy of the app
+          # Spotlight finds (a backup folder, the Desktop…) and /Applications keeps the old version —
+          # the exact "update successful but still old version" failure.
+          pkgbuild --analyze --root "$PKG_ROOT" "$COMP_DIR/comp.plist"
+          plutil -replace "0.BundleIsRelocatable" -bool NO "$COMP_DIR/comp.plist" || true
           pkgbuild \
             --root "$PKG_ROOT" \
+            --component-plist "$COMP_DIR/comp.plist" \
             --scripts "$SCR" \
             --identifier "com.zhmotions.downloader" \
-            --version "6.6.15" \
+            --version "6.6.16" \
             --install-location "/" \
             "$COMP_DIR/component.pkg"
           cat > "$COMP_DIR/dist.xml" << 'DISTEOF'
@@ -251,14 +261,14 @@ jobs:
             <choices-outline><line choice="default"><line choice="com.zhmotions.downloader"/></line></choices-outline>
             <choice id="default"/>
             <choice id="com.zhmotions.downloader" visible="false"><pkg-ref id="com.zhmotions.downloader"/></choice>
-            <pkg-ref id="com.zhmotions.downloader" version="6.6.15" onConclusion="none">component.pkg</pkg-ref>
+            <pkg-ref id="com.zhmotions.downloader" version="6.6.16" onConclusion="none">component.pkg</pkg-ref>
           </installer-gui-script>
           DISTEOF
           productbuild \
             --distribution "$COMP_DIR/dist.xml" \
             --package-path "$COMP_DIR" \
             --resources "$RES_DIR" \
-            --version "6.6.15" \
+            --version "6.6.16" \
             "ZHDownloader-macOS.pkg"
 
       - name: Publish macOS assets to Release (on tag)

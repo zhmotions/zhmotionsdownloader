@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.15"
+APP_VER     = "6.6.16"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -3784,6 +3784,11 @@ class App:
                 return
         except Exception:
             return
+        # A title that is itself a FILENAME ("ZHDownloader-macOS.pkg") must lose its extension FIRST —
+        # sanitizing turned the dot into a space and the real suffix re-appended: "… pkg.pkg".
+        if p.suffix and new_name.lower().endswith(p.suffix.lower()):
+            new_name = new_name[: -len(p.suffix)]
+        new_name = _re.sub(r"\.[A-Za-z0-9]{2,5}$", "", new_name)
         new_name = _re.sub("[^a-zA-Z0-9 _-]", " ", new_name)
         new_name = _re.sub(" +", " ", new_name).strip()[:60]
         if not new_name or len(new_name) < 3: return
