@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.16"
+APP_VER     = "6.6.17"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -426,6 +426,9 @@ class DL:
         self.eta_v   = None
         self.size_v  = 0
         self.done_f  = ""
+        self.dl_files = set()  # every basename yt-dlp touched for THIS item — cleanup
+                               # deletes ONLY these (folder-wide sweep killed other
+                               # live jobs' .part files under concurrent downloads)
         self.priority = 1   # 0=high, 1=normal, 2=low
         self.start_t = 0
         self.end_t   = 0
@@ -760,6 +763,9 @@ class App:
         # Background update check (10s after startup, once per session)
         root.after(10000, self._check_for_updates_async)
         root.after(2000, self._reverify_license)   # refresh Pro status online
+        # HARD license gate — key-only app, no free tier. Shown once the main
+        # window is up; blocks everything until a key activates.
+        root.after(800, lambda: (None if self._licensed() else self._license_gate()))
         # Apply autostart preference (idempotent — won't duplicate entry)
         if self.cfg.get("autostart", True):
             root.after(3000, lambda: self._apply_autostart(True))
@@ -1924,6 +1930,12 @@ class App:
         else:
             url, referer = payload, ""
         self._ext_seen = True
+        if not self._licensed():
+            self.log("[license] activation key required — download blocked")
+            self._restore_window()
+            try: self.root.after(0, self._license_gate)
+            except Exception: pass
+            return
         # Guard: YouTube LIST pages (search results / home / feeds) aren't videos —
         # yt-dlp treats them as "playlist: 0 items" and downloads only a thumbnail.
         try:
@@ -2703,11 +2715,75 @@ class App:
             w.lift(); w.focus_force(); w.update_idletasks()
         except Exception: pass
 
-    # ── Licensing (Free + Pro) ──────────────────────────────────────────
+    # ── Licensing (key-only — NO free tier) ─────────────────────────────
     def is_pro(self):
-        # License is now PUBLIC/free — 4K, batch, playlists and scheduler are
-        # unlocked for everyone. (Was: valid key + plan=="pro".)
-        return True
+        return self._licensed()
+
+    def _licensed(self):
+        """Hard gate: app usable ONLY with an activated key. valid=True comes
+        from a server verify; _load_license flips it off when the last check
+        is older than GRACE_DAYS (offline grace window)."""
+        l = self.lic or {}
+        return bool(l.get("key")) and bool(l.get("valid"))
+
+    def _license_gate(self):
+        """BLOCKING activation window. Closing it quits the app — there is no
+        free mode. Re-shown if the server later reports the key invalid."""
+        if self._licensed(): return
+        if getattr(self, "_gate_win", None):
+            try: self._gate_win.lift(); self._gate_win.focus_force(); return
+            except Exception: self._gate_win = None
+        T = THEMES.get(self.cfg.get("theme","Light"), THEMES["Light"])
+        w = tk.Toplevel(self.root); self._gate_win = w
+        w.title("Activate ZH Downloader")
+        w.configure(bg=T["BG"]); w.resizable(False, False)
+        w.transient(self.root)
+        def quit_app():
+            try: self.root.destroy()
+            finally: os._exit(0)
+        w.protocol("WM_DELETE_WINDOW", quit_app)
+        tk.Label(w, text="🔑 License required", font=("Helvetica", 18, "bold"),
+                 bg=T["BG"], fg=T["TEXT"]).pack(padx=30, pady=(24, 6))
+        tk.Label(w, text="ZH Downloader needs an activation key.\nPaste the key from your purchase message to continue.",
+                 bg=T["BG"], fg=T["MUTED"], justify="center").pack(padx=30)
+        ent = tk.Entry(w, width=34, font=("Menlo", 13), justify="center")
+        ent.pack(padx=30, pady=14, ipady=5); ent.focus_set()
+        msg = tk.Label(w, text="", bg=T["BG"], fg=T["RED"]); msg.pack()
+        btns = tk.Frame(w, bg=T["BG"]); btns.pack(pady=(6, 22))
+        def do_activate():
+            key = ent.get().strip()
+            if not key: msg.config(text="Enter your key first.", fg=T["RED"]); return
+            msg.config(text="Checking…", fg=T["MUTED"]); w.update_idletasks()
+            def run():
+                ok, plan, m = license_verify(key)
+                def done():
+                    if ok:
+                        self.lic.update({"key": key, "valid": True,
+                                         "plan": plan or "pro", "checked": time.time()})
+                        self._save_license(); self._refresh_pro_badge()
+                        self.log("[license] activated ✓")
+                        self._gate_win = None
+                        try: w.destroy()
+                        except Exception: pass
+                    elif ok is None:
+                        msg.config(text="Can't reach the license server — check your internet.", fg=T["RED"])
+                    else:
+                        msg.config(text=m or "Invalid key.", fg=T["RED"])
+                try: self.root.after(0, done)
+                except Exception: pass
+            threading.Thread(target=run, daemon=True).start()
+        ent.bind("<Return>", lambda e: do_activate())
+        tk.Button(btns, text="Activate", command=do_activate).pack(side="left", padx=6)
+        tk.Button(btns, text="Buy a key", command=lambda: webbrowser.open("https://zhmotions.com/downloader")).pack(side="left", padx=6)
+        tk.Button(btns, text="Quit", command=quit_app).pack(side="left", padx=6)
+        try:
+            w.update_idletasks()
+            x = self.root.winfo_x() + (self.root.winfo_width() - w.winfo_reqwidth()) // 2
+            y = self.root.winfo_y() + 160
+            w.geometry(f"+{max(0,x)}+{max(0,y)}")
+            w.grab_set(); w.lift(); w.focus_force()
+            w.attributes("-topmost", True)
+        except Exception: pass
 
     def _load_license(self):
         try:
@@ -2735,6 +2811,11 @@ class App:
             self._save_license()
             try: self.root.after(0, self._refresh_pro_badge)
             except Exception: pass
+            if not ok:
+                # Server explicitly rejected the key — re-lock the app.
+                self.log("[license] key no longer valid — activation required")
+                try: self.root.after(0, self._license_gate)
+                except Exception: pass
         threading.Thread(target=run, daemon=True).start()
 
     def _refresh_pro_badge(self):
@@ -2795,6 +2876,8 @@ class App:
         _set_status()
 
     def _start(self):
+        if not self._licensed():
+            self._license_gate(); return
         import datetime
         raw  = self.url_box.get("1.0","end")
         # findall handles newline, space, comma, tab separated URLs (browser drag often inlines them)
@@ -3189,6 +3272,11 @@ class App:
                 # failure and RETRIES it forever — pause/cancel never actually
                 # stopped m3u8 downloads. DownloadCancelled propagates straight out.
                 raise yt_dlp.utils.DownloadCancelled("user_stop")
+            for _k in ("filename", "tmpfilename"):
+                _fv = d.get(_k)
+                if _fv:
+                    try: item.dl_files.add(Path(_fv).name)
+                    except Exception: pass
             s = d.get("status")
             if s=="downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -3220,6 +3308,9 @@ class App:
             if d.get("status") != "finished": return
             info = d.get("info_dict") or {}
             fn = info.get("filepath") or d.get("filename") or ""
+            if fn:
+                try: item.dl_files.add(Path(fn).name)
+                except Exception: pass
             if fn and Path(fn).exists():
                 item.done_f = fn
                 item.name = Path(fn).name[:80]
@@ -3275,7 +3366,11 @@ class App:
               else {"Accept-Language": "en-US,en;q=0.9"}),
             "geo_bypass":                 True,
             "age_limit":                  99,
-            "hls_prefer_native":          False,
+            # True = yt-dlp's native HLS downloader. False delegated to ffmpeg,
+            # which chokes (exit 234 = EINVAL) when browser cookies are set —
+            # the huge -cookies blob is an invalid arg. Native FD also gives
+            # .part resume (pause feature) + real progress %.
+            "hls_prefer_native":          True,
             "hls_use_mpegts":             True,
             "retries":                    15,
             "fragment_retries":           15,
@@ -3304,7 +3399,13 @@ class App:
             self.log("[info] YouTube: using android_vr client (no cookies = works without PoToken)")
         else:
             if ck and ck != "none":
-                opts["cookiesfrombrowser"] = (ck,)
+                # Sniffed Artgrid/Artlist CDN m3u8 is public — cookies are
+                # useless there and only add failure modes (Chrome-locked
+                # keychain, ffmpeg arg limits). Skip for those raw streams.
+                if any(h in url_l for h in ("cms-public", "footage-hls")):
+                    self.log("[info] public CDN stream — browser cookies not needed, skipping")
+                else:
+                    opts["cookiesfrombrowser"] = (ck,)
         # Merge output format (yt-dlp Merger uses -c copy — fast, no quality loss)
         if "merge" in f and not is_hls: opts["merge_output_format"]=f["merge"]
         if is_hls:
@@ -3465,11 +3566,18 @@ class App:
         except Exception: return ("","","")
 
     def _cleanup_intermediates(self, item):
-        """Delete all yt-dlp + transcode intermediate files in download folder."""
+        """Delete THIS item's yt-dlp + transcode intermediates ONLY.
+        NEVER folder-wide: with concurrent downloads the old blanket sweep
+        deleted another live job's .part mid-download → yt-dlp crashed with
+        [Errno 2] No such file. Ownership = basenames captured in item.dl_files
+        by the progress/pp hooks, plus the final file's stem."""
         try:
             p = Path(item.done_f)
             if not p.exists(): return
             parent = p.parent
+            own = set(getattr(item, "dl_files", ()) or ())
+            own.add(p.name)
+            stems = {Path(n).stem for n in own} | {p.stem}
             import re as _re
             for f in parent.iterdir():
                 if not f.is_file(): continue
@@ -3477,6 +3585,10 @@ class App:
                     if f.resolve() == p.resolve(): continue
                 except: pass
                 n = f.name
+                # ownership check: exact hook-seen basename, or derived from an
+                # owned stem (title.f303.mp4 / uuid.mp4.part / title.h264_tmp.mp4)
+                if n not in own and not any(n.startswith(s + ".") for s in stems):
+                    continue
                 if _re.search(r"\.f\d+\.(mp4|m4a|webm|mkv|mov|ts)$", n, _re.I):
                     try: f.unlink(); self.log(f"[cleanup] {n}")
                     except: pass
@@ -4419,7 +4531,14 @@ class App:
             with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as r:
                 data = json.loads(r.read())
             latest_ver = data.get("info",{}).get("version","")
-            if not latest_ver or latest_ver == current_ver: return
+            if not latest_ver: return
+            # Numeric compare — PyPI zero-pads ("2026.07.04") while installed
+            # reports "2026.7.4"; string != re-downloaded the SAME version on
+            # every launch. Tuple of ints treats them as equal.
+            def _vt(v):
+                try: return tuple(int(x) for x in re.findall(r"\d+", v)[:4])
+                except Exception: return (0,)
+            if _vt(latest_ver) <= _vt(current_ver): return
             # Find wheel URL
             wheel_url = None
             for f in data.get("urls", []):

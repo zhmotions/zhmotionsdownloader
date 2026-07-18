@@ -101,11 +101,14 @@ jobs:
       - name: Build MSI
         shell: pwsh
         run: |
+          # Version auto-read from source — hardcoding went stale every release
+          $ver = (Select-String -Path zh_downloader.py -Pattern 'APP_VER\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          echo "App version: $ver"
           $WIX = (Get-ChildItem 'C:\Program Files (x86)\WiX Toolset*' | Select-Object -First 1).FullName + '\bin'
           $env:Path = "$WIX;$env:Path"
           candle.exe -nologo -arch x64 `
             -dAppName="ZH Downloader" `
-            -dAppVersion="6.6.16" `
+            -dAppVersion="$ver" `
             -dAppAuthor="ZH Motions" `
             -dExePath="dist\ZHDownloader.exe" `
             -dIconPath="assets\AppIcon.ico" `
@@ -129,6 +132,12 @@ jobs:
             dist/ZHDownloader-Setup.msi
 
   build-macos:
+    # DISABLED: GitHub macos runners are arm64-only + homebrew python = arm64-only
+    # .app — Intel clients get "not supported on this Mac" (MBP 2019 case).
+    # Mac universal2 binaries are built LOCALLY via build_mac.sh (python.org
+    # universal Python + vendor static ffmpeg) and uploaded to the release by
+    # hand. Re-enable only after porting the universal2 recipe to CI.
+    if: ${{ false }}
     runs-on: macos-14   # Sonoma -> minos 14 -> runs on macOS 14, 15 (Sequoia) and 26 (older runners give lower minos = wider client support)
     permissions:
       contents: write

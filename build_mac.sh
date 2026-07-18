@@ -11,17 +11,22 @@ APP_BUNDLE="ZH Downloader.app"
 DMG_NAME="ZHDownloader-macOS.dmg"
 PKG_NAME="ZHDownloader-macOS.pkg"
 PY_SCRIPT="zh_downloader.py"
-APP_VERSION="1.1.0"
+# Keep in sync with APP_VER in zh_downloader.py (auto-read)
+APP_VERSION="$(grep -m1 '^APP_VER' zh_downloader.py | sed 's/.*"\(.*\)".*/\1/')"
+[ -z "$APP_VERSION" ] && APP_VERSION="0.0.0"
 APP_AUTHOR="ZH Motions"
 APP_BUNDLE_ID="com.zhmotions.downloader"
 APP_COPYRIGHT="© 2026 ZH Motions"
 
 echo "==> 1/6 Setup virtualenv"
-# Pick Python with working Tk
-if [ -x "/opt/homebrew/bin/python3.12" ]; then
+# UNIVERSAL2 build: MUST use python.org framework Python (universal binary).
+# Homebrew python is arm64-only → app won't open on Intel Macs
+# ("not supported on this Mac" on 2019 MBP etc).
+if [ -x "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3" ]; then
+  PY=/Library/Frameworks/Python.framework/Versions/3.12/bin/python3
+elif [ -x "/opt/homebrew/bin/python3.12" ]; then
+  echo "  ⚠ python.org universal Python not found — falling back to homebrew (ARM-ONLY BUILD!)"
   PY=/opt/homebrew/bin/python3.12
-elif [ -x "/opt/homebrew/bin/python3.11" ]; then
-  PY=/opt/homebrew/bin/python3.11
 else
   PY=python3
 fi
@@ -41,15 +46,29 @@ echo "==> 2/6 Install build deps"
 pip install --quiet --upgrade pip
 pip install --quiet -r requirements.txt
 pip install --quiet pyinstaller
+# Pillow ships thin (arm64/x86_64) wheels only — replace with our
+# delocate-merged universal2 wheel so --target-arch universal2 passes.
+if ls vendor/wheels/pillow-*universal2.whl >/dev/null 2>&1; then
+  echo "    Installing universal2 Pillow from vendor/wheels"
+  pip install --quiet --force-reinstall vendor/wheels/pillow-*universal2.whl
+fi
 
 echo "==> 3/6 Check ffmpeg"
-FFMPEG_BIN="$(command -v ffmpeg || true)"
-if [ -z "$FFMPEG_BIN" ]; then
-  echo "    ffmpeg not on PATH — building without it."
-  ADD_BINARY=""
+# Bundle the STATIC universal ffmpeg+ffprobe from vendor/ — the old homebrew
+# ffmpeg was dylib-linked to /opt/homebrew/Cellar (broken on client Macs)
+# and arm64-only (broken on Intel).
+if [ -x "vendor/ffmpeg-universal/ffmpeg" ]; then
+  echo "    Using vendor/ffmpeg-universal (static universal2)"
+  ADD_BINARY="--add-binary vendor/ffmpeg-universal/ffmpeg:. --add-binary vendor/ffmpeg-universal/ffprobe:."
 else
-  echo "    Using $FFMPEG_BIN"
-  ADD_BINARY="--add-binary $FFMPEG_BIN:."
+  FFMPEG_BIN="$(command -v ffmpeg || true)"
+  if [ -z "$FFMPEG_BIN" ]; then
+    echo "    ffmpeg not on PATH — building without it."
+    ADD_BINARY=""
+  else
+    echo "  ⚠ vendor/ffmpeg-universal missing — using $FFMPEG_BIN (may be dylib-linked/thin!)"
+    ADD_BINARY="--add-binary $FFMPEG_BIN:."
+  fi
 fi
 
 echo "==> 4/6 PyInstaller build .app"
@@ -63,6 +82,9 @@ pyinstaller \
   --noconfirm \
   --clean \
   --windowed \
+  --target-arch universal2 \
+  --exclude-module tkinterdnd2 \
+  --exclude-module pystray \
   --name "$APP_NAME" \
   --osx-bundle-identifier "$APP_BUNDLE_ID" \
   $ICON_OPT \
@@ -146,8 +168,22 @@ cp -R "dist/$APP_BUNDLE" "$PKG_ROOT/Applications/"
 COMP_DIR="$(mktemp -d)"
 COMP_PKG="$COMP_DIR/component.pkg"
 
+# postinstall strips quarantine so the unsigned app opens without the
+# macOS "damaged"/"can't be opened" warning after install.
+SCR_DIR="$(mktemp -d)"
+printf '#!/bin/sh\n/usr/bin/xattr -cr "/Applications/ZH Downloader.app" 2>/dev/null || true\nexit 0\n' > "$SCR_DIR/postinstall"
+chmod +x "$SCR_DIR/postinstall"
+
+# NON-relocatable: without this, macOS Installer "upgrades" whichever OTHER
+# copy Spotlight finds (backup folder, Desktop…) and /Applications keeps the
+# old version — the "update successful but still old version" failure.
+pkgbuild --analyze --root "$PKG_ROOT" "$COMP_DIR/comp.plist"
+plutil -replace "0.BundleIsRelocatable" -bool NO "$COMP_DIR/comp.plist" || true
+
 pkgbuild \
   --root "$PKG_ROOT" \
+  --component-plist "$COMP_DIR/comp.plist" \
+  --scripts "$SCR_DIR" \
   --identifier "$APP_BUNDLE_ID" \
   --version "$APP_VERSION" \
   --install-location "/" \

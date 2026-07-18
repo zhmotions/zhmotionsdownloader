@@ -38,3 +38,6 @@ osx-x64/
 ZHDownloader-extension old.zip
 dist/
 build/
+
+# 152MB universal static ffmpeg — over GitHub 100MB limit, local-only (see memory/mac-universal2-build)
+vendor/ffmpeg-universal/
