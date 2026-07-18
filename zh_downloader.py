@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.17"
+APP_VER     = "6.6.18"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -91,6 +91,9 @@ except Exception:
 
 # -- Licensing (free app, Pro unlocked by a key — same system as ZH MacCleaner) --
 LICENSE_URL = "https://zhmotions.com/api/license/verify"   # non-www + no .php
+# Buy page = the PRODUCT page (Buy Now button lives there). /downloader is the
+# download/landing page — sending buyers there was a dead end (no Buy button).
+BUY_URL     = "https://zhmotions.com/shop.php?p=3"
 LIC_FILE    = Path.home() / ".config" / "zhdownloader" / "license.json"
 GRACE_DAYS  = 14
 _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
@@ -2774,7 +2777,7 @@ class App:
             threading.Thread(target=run, daemon=True).start()
         ent.bind("<Return>", lambda e: do_activate())
         tk.Button(btns, text="Activate", command=do_activate).pack(side="left", padx=6)
-        tk.Button(btns, text="Buy a key", command=lambda: webbrowser.open("https://zhmotions.com/downloader")).pack(side="left", padx=6)
+        tk.Button(btns, text="Buy a key", command=lambda: webbrowser.open(BUY_URL)).pack(side="left", padx=6)
         tk.Button(btns, text="Quit", command=quit_app).pack(side="left", padx=6)
         try:
             w.update_idletasks()
@@ -2871,7 +2874,7 @@ class App:
         link = tk.Label(win, text="Buy a key → zhmotions.com/shop", bg=T["BG"], fg=T["ACCENT"],
                         cursor="hand2", font=("Helvetica", 11, "underline"))
         link.pack(anchor="w", padx=18, pady=(12,0))
-        link.bind("<Button-1>", lambda e: webbrowser.open("https://zhmotions.com/shop"))
+        link.bind("<Button-1>", lambda e: webbrowser.open(BUY_URL))
         tk.Button(win, text="Deactivate", command=deactivate).pack(anchor="w", padx=18, pady=12)
         _set_status()
 
