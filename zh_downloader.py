@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.18"
+APP_VER     = "6.6.19"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -4367,13 +4367,50 @@ class App:
                 self._mq.put(("status", ""))
         self.root.after(0, ui)
 
+    def _auto_update_fetch(self, latest, html_url):
+        """Background installer download (runs in the update-check thread). Success →
+        pending_update in cfg; the next launch installs it. Failure → the old manual
+        prompt, so an update is never silently lost."""
+        try:
+            pu = self.cfg.get("pending_update") or {}
+            if str(pu.get("ver")) == str(latest) and Path(str(pu.get("path", ""))).exists():
+                self.log(f"[update] v{latest} already downloaded — restart the app to install it")
+                self._mq.put(("status", f"⬇ Update v{latest} ready — restart the app to install"))
+                return
+            if sys.platform == "darwin":
+                url, fname = f"https://zhmotions.com/downloader/ZHDownloader-macOS.pkg?v={latest}", f"ZHDownloader-{latest}.pkg"
+            elif os.name == "nt":
+                url, fname = f"https://zhmotions.com/downloader/ZHDownloader-Setup.msi?v={latest}", f"ZHDownloader-Setup-{latest}.msi"
+            else:
+                self.root.after(0, lambda l=latest, u=html_url: self._show_update_prompt(l, u))
+                return
+            UPD_DIR.mkdir(parents=True, exist_ok=True)
+            dest = UPD_DIR / fname
+            self.log(f"[update] v{latest} downloading in the background…")
+            p = subprocess.run(["curl", "-fSL", "--retry", "2", "-m", "900", "-A", _UA,
+                                "-o", str(dest), url], capture_output=True, **_SUBPROCESS_HIDE)
+            if p.returncode != 0 or not dest.exists() or dest.stat().st_size < 5_000_000:
+                try: dest.unlink(missing_ok=True)
+                except Exception: pass
+                self.log("[update] background download failed — falling back to the manual prompt")
+                self.root.after(0, lambda l=latest, u=html_url: self._show_update_prompt(l, u))
+                return
+            self.cfg["pending_update"] = {"ver": str(latest), "path": str(dest), "launched": False}
+            jsave(CFG_PATH, self.cfg)
+            self.log(f"[update] v{latest} ready ({dest.stat().st_size // 1048576} MB) — restart the app and it installs itself")
+            self._mq.put(("status", f"⬇ Update v{latest} ready — restart the app to install"))
+        except Exception as e:
+            self.log(f"[update] auto-update error: {e}")
+            try: self.root.after(0, lambda l=latest, u=html_url: self._show_update_prompt(l, u))
+            except Exception: pass
+
     def _update_download_worker(self, latest):
         try:
             self.log(f"[update] v{latest} available — downloading installer…")
             if sys.platform == "darwin":
-                url, fname = "https://zhmotions.com/downloader/ZHDownloader-macOS.pkg", f"ZHDownloader-{latest}.pkg"
+                url, fname = f"https://zhmotions.com/downloader/ZHDownloader-macOS.pkg?v={latest}", f"ZHDownloader-{latest}.pkg"
             elif os.name == "nt":
-                url, fname = "https://zhmotions.com/downloader/ZHDownloader-Setup.msi", f"ZHDownloader-Setup-{latest}.msi"
+                url, fname = f"https://zhmotions.com/downloader/ZHDownloader-Setup.msi?v={latest}", f"ZHDownloader-Setup-{latest}.msi"
             else:
                 self.root.after(0, lambda: messagebox.showinfo(APP_NAME,
                     "Auto-install isn't supported on this OS — get it from zhmotions.com/downloader"))
@@ -4470,7 +4507,9 @@ class App:
                     self.log(f"[update] v{APP_VER} is latest ({name}: v{latest})")
                     return
                 self.log(f"[update] NEW VERSION v{latest} (you have v{APP_VER}) — source: {name}")
-                self.root.after(0, lambda l=latest, u=html_url: self._show_update_prompt(l, u))
+                # Silent auto-update: fetch the installer in the background now; the NEXT app
+                # start launches it automatically ("restart = update installs itself").
+                self._auto_update_fetch(latest, html_url)
                 return
             except Exception as e:
                 self.log(f"[update] {name} check failed: {e}")
@@ -4734,9 +4773,45 @@ def _register_url_scheme_windows():
     except Exception:
         pass
 
+UPD_DIR = Path.home() / ".zhdownloader-updates"
+
+def _pending_update_install():
+    """Before the UI: a newer installer auto-downloaded on a previous run? Launch it
+    now and exit — 'restart the app = the update installs itself'. One attempt per
+    downloaded version (launched flag) so a cancelled install doesn't nag forever."""
+    try:
+        cfg = jload(CFG_PATH, {})
+        pu = cfg.get("pending_update") or {}
+        ver, path = str(pu.get("ver", "")), str(pu.get("path", ""))
+        if not ver or not path:
+            return
+        def vt(v): return tuple(int(x) for x in str(v).split(".") if x.isdigit())
+        if vt(ver) <= vt(APP_VER) or not Path(path).exists():
+            # already installed (or the file vanished) → clean up quietly
+            try: Path(path).unlink(missing_ok=True)
+            except Exception: pass
+            cfg.pop("pending_update", None); jsave(CFG_PATH, cfg)
+            return
+        if pu.get("launched"):
+            return   # user cancelled the installer once — the in-app banner still offers it
+        pu["launched"] = True; cfg["pending_update"] = pu; jsave(CFG_PATH, cfg)
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        elif os.name == "nt":
+            # /passive = auto-install with just a progress bar (one UAC click)
+            subprocess.Popen(["msiexec", "/i", path, "/passive"], **_SUBPROCESS_HIDE)
+        else:
+            return
+        sys.exit(0)
+    except SystemExit:
+        raise
+    except Exception:
+        pass
+
 def main():
     """Staged startup so any optional feature failure can't crash app."""
     global HAS_DND
+    _pending_update_install()
 
     # Make bundled binaries findable (node for YouTube PoToken, etc)
     _prepend_bundled_bins_to_path()
