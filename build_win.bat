@@ -68,6 +68,7 @@ pyinstaller ^
   %VERSION_OPT% ^
   --add-data "assets;assets" ^
   --add-data "extension;extension" ^
+  --collect-all yt_dlp_ejs ^
   %ADD_BINARY% ^
   %ADD_QJS% ^
   "%PY_SCRIPT%"

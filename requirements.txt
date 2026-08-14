@@ -1,5 +1,8 @@
 # master build: stable 2026.7.4's facebook extractor is broken (share/v links)
 yt-dlp @ https://github.com/yt-dlp/yt-dlp/archive/master.zip
+# YouTube's `n` challenge solver script (188 KB). Without it yt-dlp only warns
+# "n challenge solving failed" and every YouTube media URL 403s.
+yt-dlp-ejs
 certifi>=2024.2.2
 Pillow>=10.0.0
 tkinterdnd2>=0.4.0

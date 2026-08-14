@@ -1,9 +1,27 @@
 (function() {
   'use strict';
 
-  // Already injected?
-  if (window.__zhLoaded) return;
+  // ── Re-injection guard ────────────────────────────────────────────────
+  // background.js reinjectAllTabs() re-runs this file in tabs that may already
+  // have a copy, and Chrome's own document_end injection can race it. Three
+  // cases have to behave differently:
+  //   live copy   → bail out, or every document-level listener gets doubled
+  //                 (that is how one Download click turned into two sends)
+  //   stale copy  → the extension was updated, so the old copy's chrome.* calls
+  //                 all throw. Tear its UI + listeners down, then re-init so the
+  //                 tab heals without a manual Cmd+R.
+  //   fresh tab   → normal init.
+  if (window.__zhLoaded) {
+    var _live = false;
+    try { _live = !!(window.__zhAlive && window.__zhAlive()); } catch (e) { _live = false; }
+    if (_live) { window.__zhSkip = true; return; }
+    try { window.__zhTeardown && window.__zhTeardown(); } catch (e) {}
+  }
   window.__zhLoaded = true;
+  window.__zhSkip   = false;   // read by the overlay-pill IIFE at the bottom
+  window.__zhAlive  = function() {
+    try { return !!(chrome && chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
+  };
 
   const VIDEO_HOSTS = ['youtube.com','youtu.be','vimeo.com','tiktok.com',
     'instagram.com','facebook.com','twitter.com','x.com','twitch.tv',
@@ -15,7 +33,9 @@
   const isVideoSite = VIDEO_HOSTS.some(h => location.hostname.includes(h));
 
   // ── shared state ──────────────────────────────────────────────────────
-  const S = { items: [], btn: null, win: null, winVisible: false, dismissed: false };
+  // dismissed survives a re-init (extension update) — the user closed the
+  // circle on this tab and shouldn't have it pop back after an auto-update.
+  const S = { items: [], btn: null, dismissed: !!window.__zhDismissed };
 
   // ── CSS ───────────────────────────────────────────────────────────────
   const style = document.createElement('style');
@@ -57,8 +77,6 @@
       border-radius: 6px !important;
       pointer-events: none !important;
     }
-    /* Label hidden — IDM style is icon-only circle */
-    #__zhbtn .lbl { display: none !important; }
     /* Close × in top-right corner of circle */
     #__zhbtn .close {
       pointer-events: auto !important;
@@ -81,118 +99,6 @@
       background: #eb5757 !important; color: #fff !important; border-color: #eb5757 !important;
     }
 
-    #__zhwin {
-      all: initial;
-      position: fixed !important;
-      width: 320px !important;
-      z-index: 2147483647 !important;
-      display: none !important;
-      font-family: -apple-system, sans-serif !important;
-      background: #160800 !important;
-      border: 1px solid #3d1e08 !important;
-      border-radius: 12px !important;
-      box-shadow: 0 8px 40px rgba(0,0,0,.7) !important;
-      overflow: hidden !important;
-    }
-    #__zhwin.open { display: block !important; }
-
-    .__zhwin_hdr {
-      display: flex !important; align-items: center !important;
-      gap: 8px !important; padding: 10px 14px !important;
-      background: #1c0800 !important;
-      border-bottom: 1px solid #2e1005 !important;
-      cursor: move !important; user-select: none !important;
-    }
-    .__zhwin_hdr img {
-      width: 20px !important; height: 20px !important;
-      border-radius: 5px !important; pointer-events: none !important;
-    }
-    .__zhwin_title {
-      flex: 1 !important; font-size: 12px !important;
-      font-weight: 600 !important; color: #ff8c42 !important;
-      pointer-events: none !important;
-    }
-    .__zhwin_x {
-      width: 16px !important; height: 16px !important;
-      border-radius: 50% !important; background: #eb5757 !important;
-      border: none !important; cursor: pointer !important;
-      color: #fff !important; font-size: 10px !important;
-      display: flex !important; align-items: center !important;
-      justify-content: center !important; flex-shrink: 0 !important;
-    }
-    .__zhwin_body {
-      padding: 8px 12px !important;
-      max-height: 260px !important; overflow-y: auto !important;
-    }
-    .__zhwin_foot {
-      padding: 8px 12px !important;
-      border-top: 1px solid #2e1005 !important;
-      display: flex !important; gap: 6px !important;
-    }
-    .__zhitem {
-      background: #1e0d02 !important;
-      border: 1px solid #2e1005 !important;
-      border-radius: 8px !important;
-      padding: 8px 10px !important; margin-bottom: 6px !important;
-    }
-    .__zhitem_top {
-      display: flex !important; align-items: center !important;
-      gap: 6px !important; margin-bottom: 4px !important;
-    }
-    .__zhbadge {
-      font-size: 9px !important; font-weight: 700 !important;
-      padding: 2px 5px !important; border-radius: 3px !important;
-      flex-shrink: 0 !important;
-    }
-    .__zhbadge.v { background: #1a3a2a !important; color: #6fcf97 !important; }
-    .__zhbadge.h { background: #2a1a3a !important; color: #bb86fc !important; }
-    .__zhbadge.a { background: #1a2a3a !important; color: #56ccf2 !important; }
-    .__zhbadge.f { background: #2a2a1a !important; color: #f2c94c !important; }
-    .__zhname {
-      font-size: 11px !important; color: #ffddc0 !important;
-      white-space: nowrap !important; overflow: hidden !important;
-      text-overflow: ellipsis !important; flex: 1 !important;
-    }
-    .__zhsz { font-size: 10px !important; color: rgba(255,140,66,.5) !important; }
-    .__zhpbar {
-      height: 3px !important; background: #2e1005 !important;
-      border-radius: 3px !important; margin-bottom: 4px !important;
-      overflow: hidden !important;
-    }
-    .__zhpfill {
-      height: 100% !important;
-      background: linear-gradient(90deg,#ff6b35,#ffaa55) !important;
-      border-radius: 3px !important; transition: width .3s !important;
-    }
-    .__zhst {
-      font-size: 10px !important; color: rgba(255,140,66,.4) !important;
-      margin-bottom: 4px !important;
-    }
-    .__zhacts { display: flex !important; gap: 5px !important; }
-    .__zhbtn_dl, .__zhbtn_cp {
-      flex: 1 !important; padding: 6px 8px !important;
-      border-radius: 6px !important; border: none !important;
-      font-size: 12px !important; font-weight: 600 !important;
-      cursor: pointer !important;
-    }
-    .__zhbtn_dl {
-      background: #ff6b35 !important; color: #fff !important;
-    }
-    .__zhbtn_cp {
-      background: #2e1005 !important; color: #ff8c42 !important;
-      border: 1px solid #3d1e08 !important;
-    }
-    .__zhfoot_btn {
-      flex: 1 !important; padding: 7px !important;
-      border-radius: 7px !important; border: none !important;
-      font-size: 12px !important; font-weight: 600 !important;
-      cursor: pointer !important;
-    }
-    .__zhfoot_btn.p { background: #ff6b35 !important; color: #fff !important; }
-    .__zhfoot_btn.g {
-      background: #1e0d02 !important; color: #ff8c42 !important;
-      border: 1px solid #3d1e08 !important;
-    }
     #__zhtoast {
       position: fixed !important; z-index: 2147483647 !important;
       top: 16px !important; left: 50% !important;
@@ -207,7 +113,7 @@
     #__zhtoast.ok  { background:#1a2e1a !important; color:#6fcf97 !important; border:1px solid #6fcf97 !important; }
     #__zhtoast.err { background:#2e1a1a !important; color:#eb5757 !important; border:1px solid #eb5757 !important; }
   `;
-  document.head.appendChild(style);
+  (document.head || document.documentElement).appendChild(style);
 
   // ── Toast ─────────────────────────────────────────────────────────────
   let toastTimer;
@@ -226,19 +132,6 @@
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────
-  function fmtSize(b) {
-    if (!b) return '';
-    if (b > 1073741824) return (b/1073741824).toFixed(1)+' GB';
-    if (b > 1048576)    return (b/1048576).toFixed(1)+' MB';
-    if (b > 1024)       return (b/1024).toFixed(0)+' KB';
-    return b+'B';
-  }
-  function badgeCls(t) {
-    if (['HLS','DASH','STREAM'].includes(t)) return 'h';
-    if (['MP4','WEBM','VIDEO','MKV'].includes(t)) return 'v';
-    if (t === 'AUDIO') return 'a';
-    return 'f';
-  }
   function shortUrl(url) {
     try {
       var p = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || '');
@@ -250,194 +143,64 @@
   }
 
   // ── Items ─────────────────────────────────────────────────────────────
+  // Kept only to decide whether this page has anything worth showing the
+  // circle for. The old in-page list window that rendered them was never
+  // reachable (nothing called showWin) — it has been removed.
   function addItem(item) {
     if (S.items.some(function(i) { return i.url === item.url; })) return false;
     S.items.unshift(item);
     if (S.items.length > 40) S.items.length = 40;
-    renderItems();
-    updateBtnLabel();
     return true;
   }
 
-  function updateBtnLabel() {
-    var lbl = document.querySelector('#__zhbtn .lbl');
-    if (lbl) lbl.textContent = S.items.length > 0
-      ? 'Download (' + S.items.length + ')'
-      : 'Download';
-  }
-
-  function renderItems() {
-    var body = document.querySelector('#__zhwin .__zhwin_body');
-    if (!body) return;
-    if (!S.items.length) {
-      body.innerHTML = '<div style="text-align:center;color:rgba(255,140,66,.35);font-size:12px;padding:20px 0">No media detected yet.<br>Play a video or visit a page with files.</div>';
+  // ── Send ──────────────────────────────────────────────────────────────
+  // One click on the circle = download what this page is showing. It routes
+  // through the overlay pill's sender so both entry points behave identically:
+  // the circle used to post a bare page URL with no title, which is
+  // "ERROR: Unsupported URL" on Artlist/Artgrid and a UUID filename elsewhere.
+  function sendPage() {
+    if (typeof window.__zhSendCurrent === 'function') {
+      window.__zhSendCurrent('', null, function(res) {
+        if (res && res.blocked) { toast('Play the clip for a second first', 'err'); return; }
+        toast(res && res.ok ? 'Sent to ZH Downloader!' : 'Open ZH Downloader app first!',
+              res && res.ok ? 'ok' : 'err');
+      });
       return;
     }
-    body.innerHTML = S.items.map(function(it, i) {
-      return '<div class="__zhitem">' +
-        '<div class="__zhitem_top">' +
-          '<span class="__zhbadge ' + badgeCls(it.type) + '">' + it.type + '</span>' +
-          '<span class="__zhname" title="' + it.url + '">' + (it.name || shortUrl(it.url)) + '</span>' +
-          '<span class="__zhsz">' + (it.size || '') + '</span>' +
-        '</div>' +
-        '<div class="__zhpbar"><div class="__zhpfill" style="width:' + (it.pct||0) + '%"></div></div>' +
-        '<div class="__zhst">' + (it.status || 'Ready') + '</div>' +
-        '<div class="__zhacts">' +
-          '<button class="__zhbtn_dl" data-idx="' + i + '">Download</button>' +
-          '<button class="__zhbtn_cp" data-idx="' + i + '">Copy URL</button>' +
-        '</div>' +
-      '</div>';
-    }).join('');
-
-    // Attach click handlers
-    body.querySelectorAll('.__zhbtn_dl').forEach(function(btn) {
-      btn.addEventListener('click', function() { dlItem(parseInt(btn.dataset.idx)); });
-    });
-    body.querySelectorAll('.__zhbtn_cp').forEach(function(btn) {
-      btn.addEventListener('click', function() { cpItem(parseInt(btn.dataset.idx)); });
-    });
-  }
-
-  function dlItem(i) {
-    var it = S.items[i];
-    if (!it) return;
-    // blob: URLs are internal — use page URL instead
-    var sendUrl = it.url;
-    if (sendUrl.startsWith('blob:') || sendUrl.startsWith('data:')) {
-      sendUrl = location.href;
-    }
-    S.items[i].status = 'Sending...';
-    renderItems();
     chrome.runtime.sendMessage(
-      { type: 'ZH_SEND_TO_APP', url: sendUrl, referer: location.href },
+      { type: 'ZH_SEND_TO_APP', url: location.href, referer: location.href },
       function(res) {
-        if (res && res.ok) {
-          S.items[i].status = 'Sent! Downloading...';
-          renderItems();
-          toast('Sent to ZH Downloader!');
-        } else {
-          S.items[i].status = 'Ready';
-          renderItems();
-          toast('Open ZH Downloader app first!', 'err');
-        }
-      }
-    );
-  }
-
-  function cpItem(i) {
-    var it = S.items[i];
-    if (!it) return;
-    try {
-      navigator.clipboard.writeText(it.url).then(function() { toast('URL copied!'); });
-    } catch(e) {
-      var t = document.createElement('textarea');
-      t.value = it.url;
-      document.body.appendChild(t);
-      t.select();
-      document.execCommand('copy');
-      t.remove();
-      toast('URL copied!');
-    }
-  }
-
-  // ── Mini window ───────────────────────────────────────────────────────
-  function buildWin() {
-    if (S.win) return;
-    var div = document.createElement('div');
-    div.id = '__zhwin';
-    div.innerHTML =
-      '<div class="__zhwin_hdr" id="__zhwin_hdr">' +
-        '<img src="' + iconUrl('icon48.png') + '" alt="">' +
-        '<span class="__zhwin_title">ZH Downloader</span>' +
-        '<button class="__zhwin_x" id="__zhwin_x">x</button>' +
-      '</div>' +
-      '<div class="__zhwin_body"></div>' +
-      '<div class="__zhwin_foot">' +
-        '<button class="__zhfoot_btn g" id="__zhwin_hide">Hide</button>' +
-        '<button class="__zhfoot_btn p" id="__zhwin_page">Download Page</button>' +
-      '</div>';
-    document.body.appendChild(div);
-    S.win = div;
-
-    document.getElementById('__zhwin_x').addEventListener('click', function() {
-      hideWin();
-    });
-    document.getElementById('__zhwin_hide').addEventListener('click', function() {
-      hideWin();
-    });
-    document.getElementById('__zhwin_page').addEventListener('click', function() {
-      chrome.runtime.sendMessage(
-        { type: 'ZH_SEND_TO_APP', url: location.href },
-        function(res) {
-          toast(res && res.ok ? 'Sent page to app!' : 'Open ZH Downloader app first!',
-                res && res.ok ? 'ok' : 'err');
-        }
-      );
-    });
-
-    // Drag header
-    var hdr = document.getElementById('__zhwin_hdr');
-    var dragging = false, ox = 0, oy = 0, ol = 0, ot = 0;
-    hdr.addEventListener('mousedown', function(e) {
-      if (e.target.id === '__zhwin_x') return;
-      dragging = true;
-      ox = e.clientX; oy = e.clientY;
-      var r = div.getBoundingClientRect();
-      ol = r.left; ot = r.top;
-      div.style.right = 'auto'; div.style.bottom = 'auto';
-      div.style.left = ol + 'px'; div.style.top = ot + 'px';
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', function(e) {
-      if (!dragging) return;
-      div.style.left = (ol + e.clientX - ox) + 'px';
-      div.style.top  = (ot + e.clientY - oy) + 'px';
-    });
-    document.addEventListener('mouseup', function() { dragging = false; });
-
-    renderItems();
-  }
-
-  function showWin() {
-    buildWin();
-    // Position above float button
-    if (S.btn) {
-      var r = S.btn.getBoundingClientRect();
-      var ww = 320, wh = 320;
-      var left = Math.max(4, r.right - ww);
-      var top  = r.top - wh - 8;
-      if (top < 4) top = r.bottom + 8;
-      S.win.style.right  = 'auto';
-      S.win.style.bottom = 'auto';
-      S.win.style.left   = left + 'px';
-      S.win.style.top    = top  + 'px';
-    }
-    S.win.classList.add('open');
-    S.winVisible = true;
-    renderItems();
-  }
-
-  function hideWin() {
-    if (S.win) S.win.classList.remove('open');
-    S.winVisible = false;
-  }
-
-  function toggleWin() {
-    // One click = direct download of current page
-    var sendUrl = location.href;
-    chrome.runtime.sendMessage(
-      { type: 'ZH_SEND_TO_APP', url: sendUrl, referer: sendUrl },
-      function(res) {
-        if (res && res.ok) {
-          toast('Sent to ZH Downloader!');
-        } else {
-          toast('Open ZH Downloader app first!', 'err');
-        }
+        toast(res && res.ok ? 'Sent to ZH Downloader!' : 'Open ZH Downloader app first!',
+              res && res.ok ? 'ok' : 'err');
       }
     );
   }
 
   // ── Floating button ───────────────────────────────────────────────────
+  // Drag state + the document-level listeners live out here on purpose. They
+  // used to be created inside buildBtn(), which the 2s watchdog calls again
+  // every time the button is re-added (SPA nav) — each pass leaked another
+  // mousemove + mouseup listener onto document.
+  var drag = { on:false, moved:false, sx:0, sy:0, ox:0, oy:0 };
+
+  function onDocMove(e) {
+    if (!drag.on || !S.btn) return;
+    var dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    if (Math.abs(dx) > 4 || Math.abs(dy) > 4) drag.moved = true;
+    if (drag.moved) {
+      S.btn.style.left = (drag.ox + dx) + 'px';
+      S.btn.style.top  = (drag.oy + dy) + 'px';
+    }
+  }
+  function onDocUp() {
+    if (!drag.on) return;
+    var wasMoved = drag.moved;
+    drag.on = false; drag.moved = false;
+    if (!wasMoved) sendPage();
+  }
+  document.addEventListener('mousemove', onDocMove);
+  document.addEventListener('mouseup', onDocUp);
+
   function buildBtn() {
     if (S.btn) return;
     // Respect user-dismissed state (cleared on tab close)
@@ -447,61 +210,37 @@
     btn.innerHTML =
       '<div class="wrap">' +
         '<img class="icon" src="' + iconUrl('icon48.png') + '" alt="">' +
-        '<span class="lbl">Download</span>' +
         '<span class="close" title="Hide on this tab">×</span>' +
       '</div>';
     document.body.appendChild(btn);
     S.btn = btn;
 
-    // Close button → dismiss for this tab
+    // Close button → dismiss for this tab (hides the overlay pill too — they
+    // used to disagree, so × left the pill floating over videos)
     var closeEl = btn.querySelector('.close');
     if (closeEl) {
       closeEl.addEventListener('click', function(e) {
         e.stopPropagation(); e.preventDefault();
         S.dismissed = true;
+        window.__zhDismissed = true;
+        try { window.__zhHidePill && window.__zhHidePill(); } catch (err) {}
         btn.remove();
         S.btn = null;
       });
       closeEl.addEventListener('mousedown', function(e) { e.stopPropagation(); });
     }
 
-    // Drag + click
-    var dragging = false, moved = false;
-    var startX = 0, startY = 0, origLeft = 0, origTop = 0;
-
     btn.addEventListener('mousedown', function(e) {
       if (e.button !== 0) return;
-      dragging = true;
-      moved    = false;
-      startX   = e.clientX;
-      startY   = e.clientY;
-      var r    = btn.getBoundingClientRect();
-      origLeft = r.left;
-      origTop  = r.top;
+      var r = btn.getBoundingClientRect();
+      drag.on = true; drag.moved = false;
+      drag.sx = e.clientX; drag.sy = e.clientY;
+      drag.ox = r.left;    drag.oy = r.top;
       btn.style.right  = 'auto';
       btn.style.bottom = 'auto';
-      btn.style.left   = origLeft + 'px';
-      btn.style.top    = origTop  + 'px';
+      btn.style.left   = r.left + 'px';
+      btn.style.top    = r.top  + 'px';
       e.preventDefault();
-    });
-
-    document.addEventListener('mousemove', function(e) {
-      if (!dragging) return;
-      var dx = e.clientX - startX;
-      var dy = e.clientY - startY;
-      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) moved = true;
-      if (moved) {
-        btn.style.left = (origLeft + dx) + 'px';
-        btn.style.top  = (origTop  + dy) + 'px';
-      }
-    });
-
-    document.addEventListener('mouseup', function(e) {
-      if (!dragging) return;
-      var wasMoved = moved;
-      dragging = false;
-      moved    = false;
-      if (!wasMoved) toggleWin();
     });
   }
 
@@ -513,10 +252,11 @@
   // Watchdog: re-add button every 2s if missing from DOM.
   // Respects S.dismissed → user closed it, don't re-create until tab reload.
   function ensureBtnAlive() {
-    if (!isVideoSite) return;
     if (S.dismissed) return;
-    // On YouTube, only on watch pages
-    if (location.hostname.includes('youtube.com') && location.pathname !== '/watch') {
+    // On YouTube, only on watch/shorts pages (shorts used to lose the button
+    // even though the overlay pill still offered itself there)
+    if (location.hostname.includes('youtube.com') &&
+        location.pathname !== '/watch' && location.pathname.indexOf('/shorts/') !== 0) {
       var existing = document.getElementById('__zhbtn');
       if (existing) existing.remove();
       S.btn = null;
@@ -528,12 +268,15 @@
     }
   }
 
-  if (isVideoSite) initBtn();
-  setInterval(ensureBtnAlive, 2000);
+  var btnTimer = null;
+  if (isVideoSite) {
+    initBtn();
+    btnTimer = setInterval(ensureBtnAlive, 2000);   // only ticks on video sites now
+  }
 
   // ── Background messages ───────────────────────────────────────────────
-  chrome.runtime.onMessage.addListener(function(msg) {
-    if (msg.type !== 'ZH_UPDATED') return;
+  function onBgMessage(msg) {
+    if (!msg || msg.type !== 'ZH_UPDATED') return;
     var added = 0;
     (msg.items || []).forEach(function(it) {
       if (addItem({
@@ -542,12 +285,11 @@
         name:    it.name || shortUrl(it.url),
         size:    it.sizeStr || '',
         referer: it.referer || location.href,
-        pct:     0,
-        status:  'Ready',
       })) added++;
     });
     if (added > 0 && !S.btn) initBtn();
-  });
+  }
+  chrome.runtime.onMessage.addListener(onBgMessage);
 
   // ── DOM scan ──────────────────────────────────────────────────────────
   function scan() {
@@ -561,41 +303,46 @@
         return s && !seen[s] && !s.startsWith('blob:') && !s.startsWith('data:');
       }).forEach(function(s) {
         addItem({ url:s, type:'VIDEO', name:document.title.slice(0,40),
-                  size:'', referer:location.href, pct:0, status:'Ready' });
+                  size:'', referer:location.href });
         seen[s] = true;
       });
     });
     // For video sites — always add page URL as downloadable item
     if (isVideoSite && !seen[location.href]) {
       addItem({ url:location.href, type:'VIDEO', name:document.title.slice(0,60),
-                size:'', referer:location.href, pct:0, status:'Ready' });
+                size:'', referer:location.href });
       seen[location.href] = true;
     }
-    document.querySelectorAll('a[href]').forEach(function(a) {
+    // Feed pages carry thousands of anchors and this runs on every mutation
+    // burst — cap the walk so scrolling YouTube/Facebook stays smooth.
+    var links = document.querySelectorAll('a[href]');
+    var lim = Math.min(links.length, 500);
+    for (var i = 0; i < lim; i++) {
+      var a = links[i];
       if (a.href && FILE_EXT.test(a.href) && !seen[a.href]) {
         addItem({ url:a.href, type:'FILE',
                   name:(a.textContent||'').trim().slice(0,40)||shortUrl(a.href),
-                  size:'', referer:location.href, pct:0, status:'Ready' });
+                  size:'', referer:location.href });
         seen[a.href] = true;
       }
-    });
+    }
   }
 
   scan();
   var scanTimer;
-  new MutationObserver(function() {
+  var mo = new MutationObserver(function() {
     clearTimeout(scanTimer);
     scanTimer = setTimeout(scan, 1000);
-  }).observe(document.body || document.documentElement, { childList:true, subtree:true });
-  document.addEventListener('visibilitychange', function() {
-    if (!document.hidden) scan();
   });
+  mo.observe(document.body || document.documentElement, { childList:true, subtree:true });
+  function onVis() { if (!document.hidden) scan(); }
+  document.addEventListener('visibilitychange', onVis);
 
   // ── Download link intercept ───────────────────────────────────────────
   // ONLY intercept explicit <a download> links — not all file URLs.
   // Disabled entirely when S.dismissed (user closed floating button).
   // This prevents extension from hijacking normal browser navigation.
-  document.addEventListener('click', function(e) {
+  function onDocClick(e) {
     if (S.dismissed) return;
     var el = e.target;
     while (el && el !== document) {
@@ -618,7 +365,30 @@
       }
       el = el.parentElement;
     }
-  }, true);
+  }
+  document.addEventListener('click', onDocClick, true);
+
+  // ── Teardown ──────────────────────────────────────────────────────────
+  // Called by the NEXT injection of this file when it finds this copy stale
+  // (extension updated). Everything here is plain DOM/timer work — no chrome.*
+  // call — so it still runs after the extension context is invalidated.
+  window.__zhTeardown = function() {
+    try { if (btnTimer) clearInterval(btnTimer); } catch (e) {}
+    try { clearTimeout(scanTimer); clearTimeout(toastTimer); } catch (e) {}
+    try { mo.disconnect(); } catch (e) {}
+    try {
+      document.removeEventListener('mousemove', onDocMove);
+      document.removeEventListener('mouseup', onDocUp);
+      document.removeEventListener('click', onDocClick, true);
+      document.removeEventListener('visibilitychange', onVis);
+    } catch (e) {}
+    try { chrome.runtime.onMessage.removeListener(onBgMessage); } catch (e) {}
+    ['__zh_style','__zhbtn','__zhtoast'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el && el.remove) el.remove();
+    });
+    S.btn = null;
+  };
 
 })();
 
@@ -629,9 +399,17 @@
 // ▾ = quality menu (4K / 1080p / MP3). Sent to the app bridge with a fmt hint.
 (function () {
   if (window.top !== window.self) return;           // main frame only
+  // Same re-injection story as the top of this file. This block had NO guard,
+  // so a re-inject built a SECOND pill with a second set of listeners and one
+  // click sent the download twice. __zhSkip is set by the block above.
+  if (window.__zhSkip) return;
+  try { window.__zhPillTeardown && window.__zhPillTeardown(); } catch (e) {}
+
   var PILL_ID = "__zhvid_pill";
   var MENU_ID = "__zhvid_menu";
+  var CSS_ID  = "__zhvid_css";
   var css = document.createElement("style");
+  css.id = CSS_ID;
   css.textContent =
     "#" + PILL_ID + "{position:fixed!important;z-index:2147483647!important;display:none;" +
     "align-items:center;gap:0;background:#d4a017!important;color:#0a0606!important;" +
@@ -707,8 +485,8 @@
   }
 
   function markSent(msg) {
-    pill.querySelector(".zhp_main").textContent = msg || "\u2713 Sent";
-    setTimeout(function () { pill.querySelector(".zhp_main").textContent = "\u2b07 Download"; hidePill(); }, 1400);
+    pill.querySelector(".zhp_main").textContent = msg || "✓ Sent";
+    setTimeout(function () { pill.querySelector(".zhp_main").textContent = "⬇ Download"; hidePill(); }, 1400);
   }
   function pickSniffed(items) {
     // Prefer a real stream the extension sniffed from network (Artlist/Artgrid/HLS/mp4) —
@@ -749,10 +527,14 @@
     try { return !!(chrome && chrome.runtime && chrome.runtime.id); }
     catch (e) { return false; }
   }
-  function sendCurrent(fmt) {
-    if (!curVid) return;
+  // fmt: "" | "4k" | "hd" | "mp3".  vid: optional <video> (the circle button
+  // passes null — there is nothing hovered).  cb: optional, gets the bridge
+  // reply, plus {blocked:true} when we refuse to send a URL yt-dlp can't use.
+  function sendCurrent(fmt, vid, cb) {
+    var v = vid || curVid;
     if (!extAlive()) {
       alert("ZH Downloader was updated — refresh this page (Cmd+R) once, then click Download again.");
+      if (cb) cb({ ok: false });
       return;
     }
     try {
@@ -761,19 +543,37 @@
         // Pinterest). On X/Facebook/YouTube etc the sniffer catches variant
         // playlists (e.g. video.twimg.com .../mp4a/128000/... = AUDIO-only)
         // and downloads went wrong — the page URL is what yt-dlp needs there.
-        var SNIFF_FIRST = /(artlist\.io|artgrid\.io|pinterest\.)/i.test(location.hostname);
+        var SNIFF_FIRST   = /(artlist\.io|artgrid\.io|pinterest\.)/i.test(location.hostname);
+        var NO_EXTRACTOR  = /(artlist\.io|artgrid\.io)/i.test(location.hostname);
         var sn = SNIFF_FIRST ? pickSniffed(resp && resp.items) : null;
-        var url = sn ? sn.url : videoUrlFor(curVid);
+        // Artlist/Artgrid have no yt-dlp extractor at all, so a page-URL
+        // fallback is guaranteed "ERROR: Unsupported URL". Say what's wrong
+        // instead of sending junk — the usual cause is that the clip hasn't
+        // played yet (nothing sniffed) or the service worker slept.
+        if (!sn && NO_EXTRACTOR) {
+          markSent("▶ Play clip first");
+          if (cb) cb({ ok: false, blocked: true });
+          return;
+        }
+        var url = sn ? sn.url : videoUrlFor(v);
         var ref = location.href;
         chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: url, referer: ref, fmt: fmt || "", title: cleanTitle() }, function (r) {
           // Real ACK from the app: duplicate → tell the user instead of a blind "Sent"
           markSent(r && r.status === "duplicate" ? "✓ Already added" : "✓ Sent");
+          if (cb) cb(r || { ok: false });
         });
       });
     } catch (e) {
-      try { chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: videoUrlFor(curVid), referer: location.href, fmt: fmt || "", title: cleanTitle() }); markSent(); } catch (e2) {}
+      try {
+        chrome.runtime.sendMessage({ type: "ZH_SEND_TO_APP", url: videoUrlFor(v), referer: location.href, fmt: fmt || "", title: cleanTitle() }, function (r) { if (cb) cb(r || { ok: false }); });
+        markSent();
+      } catch (e2) { if (cb) cb({ ok: false }); }
     }
   }
+  // The circle button in the block above sends through this, so both entry
+  // points get the same SNIFF_FIRST handling and title.
+  window.__zhSendCurrent = sendCurrent;
+  window.__zhHidePill    = function () { try { hidePill(); } catch (e) {} };
 
   function placePill(v) {
     var r = v.getBoundingClientRect();
@@ -813,9 +613,9 @@
     if (h.includes("artlist.io"))   return /\/(clip|song)\//.test(p);
     return true;   // other sites: no feed-preview pattern — allow everywhere
   }
-  document.addEventListener("mouseover", function (e) {
-    var v = e.target && e.target.tagName === "VIDEO" ? e.target :
-            (e.target.querySelector ? null : null);
+  function onMouseOver(e) {
+    if (window.__zhDismissed) { hidePill(); return; }   // user closed the circle → stay out of the way
+    var v = e.target && e.target.tagName === "VIDEO" ? e.target : null;
     if (!v) {
       // player containers cover the <video>; find one under the pointer
       var els = document.elementsFromPoint(e.clientX, e.clientY);
@@ -830,10 +630,13 @@
     if (v) { curVid = v; clearTimeout(hideT); placePill(v); }
     else if (e.target !== pill && !pill.contains(e.target) &&
              e.target !== menu && !menu.contains(e.target)) schedHide();
-  }, true);
+  }
+  document.addEventListener("mouseover", onMouseOver, true);
 
-  window.addEventListener("scroll", function () { if (curVid && pill.style.display !== "none") placePill(curVid); }, true);
-  window.addEventListener("resize", function () { if (curVid && pill.style.display !== "none") placePill(curVid); });
+  function onScroll() { if (curVid && pill.style.display !== "none") placePill(curVid); }
+  function onResize() { if (curVid && pill.style.display !== "none") placePill(curVid); }
+  window.addEventListener("scroll", onScroll, true);
+  window.addEventListener("resize", onResize);
 
   pill.querySelector(".zhp_main").addEventListener("click", function (e) {
     e.stopPropagation(); sendCurrent("");            // app's current default quality
@@ -845,5 +648,23 @@
     menu.style.left = Math.max(8, r.right - 150) + "px";
     menu.style.display = "block";
   });
-  document.addEventListener("click", function () { hideMenu(); });
+  function onDocClickPill() { hideMenu(); }
+  document.addEventListener("click", onDocClickPill);
+
+  // Same contract as __zhTeardown above: DOM/timer only, safe to run after the
+  // extension context is invalidated.
+  window.__zhPillTeardown = function () {
+    try { clearTimeout(hideT); } catch (e) {}
+    try {
+      document.removeEventListener("mouseover", onMouseOver, true);
+      document.removeEventListener("click", onDocClickPill);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    } catch (e) {}
+    [PILL_ID, MENU_ID, CSS_ID].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el && el.remove) el.remove();
+    });
+    curVid = null;
+  };
 })();

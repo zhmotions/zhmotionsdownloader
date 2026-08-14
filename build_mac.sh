@@ -71,6 +71,17 @@ else
   fi
 fi
 
+# QuickJS — yt-dlp runs YouTube's own JS to descramble the `n` parameter. This
+# build never bundled it (only Windows did), so Mac clients had NO JS runtime and
+# every YouTube download ended in "HTTP Error 403: Forbidden". Pairs with the
+# yt_dlp_ejs solver script collected below — one without the other still fails.
+if [ -x "vendor/qjs" ]; then
+  echo "    Bundling vendor/qjs ($(lipo -archs vendor/qjs 2>/dev/null || echo '?'))"
+  ADD_BINARY="$ADD_BINARY --add-binary vendor/qjs:."
+else
+  echo "  ⚠ vendor/qjs missing — YouTube/Facebook downloads will 403 on client Macs"
+fi
+
 echo "==> 4/6 PyInstaller build .app"
 rm -rf build dist
 
@@ -90,6 +101,7 @@ pyinstaller \
   $ICON_OPT \
   --add-data assets:assets \
   --hidden-import certifi --collect-data certifi \
+  --collect-all yt_dlp_ejs \
   $ADD_BINARY \
   "$PY_SCRIPT"
 

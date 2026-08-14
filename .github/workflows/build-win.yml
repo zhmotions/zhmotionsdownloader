@@ -85,6 +85,7 @@ jobs:
             --collect-all pystray `
             --collect-all PIL `
             --add-binary "qjs.exe;." `
+            --collect-all yt_dlp_ejs `
             --hidden-import pystray._darwin `
             --hidden-import pystray._win32 `
             --hidden-import pystray._base `
@@ -120,6 +121,20 @@ jobs:
             -cultures:en-us `
             -out "dist\ZHDownloader-Setup.msi" `
             dist\installer.wixobj
+
+      # Downloadable build WITHOUT cutting a release. A plain push to main runs
+      # this job but the publish step below is tag-gated, so there was no way to
+      # get the .exe out for testing. Short retention keeps it off the artifact
+      # storage quota that made us publish straight to Releases in the first place.
+      - name: Upload build for testing (every run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: zhdownloader-windows-test
+          retention-days: 3
+          if-no-files-found: error
+          path: |
+            dist/ZHDownloader.exe
+            dist/ZHDownloader-Setup.msi
 
       # Publish straight to the Release (ephemeral artifact storage quota is full;
       # Release assets are separate + persistent). Each job appends to the same tag.

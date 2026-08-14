@@ -2977,11 +2977,32 @@ class App:
         # Otherwise rebuild from scratch.
         existing_urls = [i.url for i in self._items] if self._items else []
         if existing_urls != urls:
-            # IDM-style persistent queue view: finished rows from the previous
-            # run stay visible (last 20). They're display-only — workers spawn
-            # only for the NEW items (self._run_items).
-            kept = [it for it in self._items if it.status == "done"][-20:]
-            for it in kept: it._prev_run = True
+            # IDM-style persistent queue view: rows from earlier stay visible.
+            # FINISHED rows are display-only (last 20 kept). Anything UNFINISHED
+            # — paused, errored, cancelled, or still in flight — has to survive
+            # too. Keeping only "done" here deleted a paused / still-downloading
+            # row the moment the next bridge send arrived, and its resume state
+            # went with it ("ekta dile onno ta running theke clear hoye jay").
+            # Workers still spawn only for the NEW items (self._run_items).
+            done_tail = [it for it in self._items if it.status == "done"][-20:]
+            keep_done = {id(it) for it in done_tail}
+            kept = [it for it in self._items
+                    if it.status != "done" or id(it) in keep_done]
+            for it in kept:
+                if it.status == "done": it._prev_run = True
+            # An unfinished row already covers this URL → don't open a second one
+            # beside it; two workers on one video write "name (1).mp4".
+            live_keys = {self._dedup_key(it.url) for it in kept if it.status != "done"}
+            if live_keys:
+                dups = [u for u in urls if self._dedup_key(u) in live_keys]
+                if dups:
+                    urls = [u for u in urls if self._dedup_key(u) not in live_keys]
+                    self.log(f"[queue] {len(dups)} URL(s) already in the list — "
+                             "press ▶ on that row to resume it")
+                    if not urls:
+                        try: self.url_box.delete("1.0", "end")
+                        except Exception: pass
+                        return
             new_items = [DL(u, 0, 0, self._referers.get(u,"")) for u in urls]
             self._items = kept + new_items
             for i, it in enumerate(self._items, 1):
@@ -3339,6 +3360,14 @@ class App:
             "writethumbnail":             self.thumb_var.get(),
             "ignoreerrors":               True,
             "js_runtimes":                _js_runtimes_opt(),
+            # YouTube's `n` parameter has to be descrambled by actually running
+            # YouTube's JS. A runtime alone is not enough — yt-dlp also needs the
+            # EJS solver script, and when it is missing it only WARNS ("n
+            # challenge solving failed") and then hands back throttled URLs that
+            # die with "unable to download video data: HTTP Error 403". We ship
+            # yt_dlp_ejs (188 KB); if a build somehow lacks it, let yt-dlp fetch
+            # the solver itself rather than fail every YouTube download.
+            **({} if _ejs_bundled() else {"remote_components": ["ejs:github"]}),
             "progress_hooks":             [hook],
             "postprocessor_hooks":        [pp_hook],
             "logger":                     _Log(self),
@@ -4739,6 +4768,17 @@ def _js_runtimes_opt():
     rt.setdefault("deno", {})
     rt.setdefault("node", {})
     return rt
+
+
+def _ejs_bundled():
+    """Is yt-dlp's YouTube challenge-solver script (yt_dlp_ejs) available offline?
+    Shipped via requirements.txt + the .spec; this only decides whether we need
+    yt-dlp's runtime download fallback."""
+    try:
+        import yt_dlp_ejs  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 def _prepend_bundled_bins_to_path():

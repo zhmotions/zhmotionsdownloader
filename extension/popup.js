@@ -16,6 +16,13 @@ const interceptEl = document.getElementById("intercept-toggle");
 
 // ── Init ───────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
+  // Read the version from the manifest instead of hardcoding it here — the two
+  // had already drifted apart once.
+  try {
+    document.getElementById("ver").textContent =
+      "by ZH Motions · v" + chrome.runtime.getManifest().version;
+  } catch {}
+
   loadItems();
   pingApp();
   setInterval(pingApp, 4000);
@@ -32,18 +39,10 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   });
 
-  // Site toggle
+  // Site toggle — background flips the whitelist and replies when it's stored,
+  // so refresh off the reply instead of guessing with a timeout.
   siteBtn.addEventListener("click", () => {
-    chrome.contextMenus && chrome.tabs.query({ active:true, currentWindow:true }, tabs => {
-      if (!tabs[0]) return;
-      chrome.runtime.sendMessage({ type:"ZH_GET_TAB" }, res => {
-        if (!res) return;
-        loadItems();
-      });
-    });
-    // Trigger context menu toggle via background
-    chrome.runtime.sendMessage({ type:"ZH_SITE_TOGGLE" });
-    setTimeout(loadItems, 300);
+    chrome.runtime.sendMessage({ type:"ZH_SITE_TOGGLE" }, () => loadItems());
   });
 
   document.getElementById("btn-clear").addEventListener("click", () => {

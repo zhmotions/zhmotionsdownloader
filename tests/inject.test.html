@@ -1,0 +1,74 @@
+<!doctype html><meta charset=utf-8><title>t</title>
+<body><video id=v width=640 height=360></video><pre id=out>running</pre>
+<script>
+// ── stub the extension API the content script talks to ──
+var sends = [], mouseoverProbes = 0;
+window.chrome = {
+  runtime: {
+    id: "stub-ext-id",
+    getURL: function(p){ return "http://localhost/" + p; },
+    sendMessage: function(msg, cb){
+      sends.push(msg.type);
+      if (msg.type === "ZH_GET_TAB") { cb && cb({ items: [] }); return; }
+      cb && cb({ ok: true, status: "queued" });
+    },
+    onMessage: { addListener: function(){}, removeListener: function(){} }
+  }
+};
+// count how many live mouseover handlers run (each calls elementsFromPoint once)
+document.elementsFromPoint = function(){ mouseoverProbes++; return [document.getElementById('v')]; };
+
+var R = [];
+function count(sel){ return document.querySelectorAll(sel).length; }
+function load(tag){
+  return new Promise(function(res){
+    var s = document.createElement('script');
+    s.src = '../extension/content.js?' + tag;          // fresh fetch each time = re-injection
+    s.onload = function(){ setTimeout(res, 50); };
+    document.body.appendChild(s);
+  });
+}
+function fireMouseover(){
+  mouseoverProbes = 0;
+  document.getElementById('out').dispatchEvent(new MouseEvent('mouseover',{bubbles:true,clientX:100,clientY:100}));
+}
+(async function(){
+  // 1. fresh tab
+  await load('a');
+  R.push(['fresh: pill count', count('#__zhvid_pill'), 1]);
+  R.push(['fresh: menu count', count('#__zhvid_menu'), 1]);
+  R.push(['fresh: css count',  count('#__zhvid_css'),  1]);
+  R.push(['fresh: __zhSkip',   String(window.__zhSkip), 'false']);
+  fireMouseover();
+  R.push(['fresh: live mouseover handlers', mouseoverProbes, 1]);
+
+  // 2. re-inject while the copy is LIVE (reinjectAllTabs racing document_end)
+  await load('b');
+  R.push(['live re-inject: pill count', count('#__zhvid_pill'), 1]);
+  R.push(['live re-inject: __zhSkip',   String(window.__zhSkip), 'true']);
+  fireMouseover();
+  R.push(['live re-inject: mouseover handlers', mouseoverProbes, 1]);
+  sends.length = 0;
+  document.querySelector('#__zhvid_pill .zhp_main').dispatchEvent(new MouseEvent('click',{bubbles:true}));
+  R.push(['live re-inject: sends per click', sends.filter(function(t){return t==='ZH_SEND_TO_APP';}).length, 1]);
+
+  // 3. extension updated → old copy orphaned → reinject must heal the tab
+  window.chrome.runtime.id = undefined;          // context invalidated
+  await load('c');
+  window.chrome.runtime.id = "stub-ext-id-2";    // new copy has a live context
+  R.push(['stale re-inject: pill count', count('#__zhvid_pill'), 1]);
+  R.push(['stale re-inject: css count',  count('#__zhvid_css'),  1]);
+  R.push(['stale re-inject: __zhSkip',   String(window.__zhSkip), 'false']);
+  fireMouseover();
+  R.push(['stale re-inject: mouseover handlers', mouseoverProbes, 1]);
+  sends.length = 0;
+  document.querySelector('#__zhvid_pill .zhp_main').dispatchEvent(new MouseEvent('click',{bubbles:true}));
+  R.push(['stale re-inject: sends per click', sends.filter(function(t){return t==='ZH_SEND_TO_APP';}).length, 1]);
+
+  var fail = 0;
+  document.getElementById('out').textContent = R.map(function(r){
+    var ok = String(r[1]) === String(r[2]); if(!ok) fail++;
+    return (ok?'PASS  ':'FAIL  ') + r[0] + ' = ' + r[1] + ' (want ' + r[2] + ')';
+  }).join('\n') + '\n\n' + (fail ? fail + ' FAILED' : 'ALL PASS');
+})();
+</script>

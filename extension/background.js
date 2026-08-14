@@ -5,7 +5,11 @@ const MEDIA_EXT   = /\.(mp4|m3u8|mpd|webm|mov|mkv|flv|ts|m4v|m4a|mp3|aac|ogg|wav
 const FILE_EXT    = /\.(pdf|zip|rar|7z|exe|dmg|pkg|msi|apk|iso|tar|gz|bz2|docx?|xlsx?|pptx?|jpg|jpeg|png|gif|webp|svg|epub|torrent)(\?|$)/i;
 const SEGMENT_EXT = /\.(ts|m4s|fmp4)(\?|$)/i;
 const SKIP_KW     = /(\/seg\/|\/chunk\/|seg-\d+\.|chunk-\d+\.|\.vtt(\?|$)|\.srt(\?|$)|thumbnail|poster|sprite)/i;
-const STREAM_KW   = /(\.m3u8|\.mpd|manifest|playlist|master|stream|preview|hls|dash|videoplayback)/i;
+// Bare words (manifest|playlist|master|stream|preview) matched anywhere in the
+// URL, so every site's manifest.json / preview.png landed in the list and
+// inflated the badge. Real streams are identified by extension, path segment or
+// content-type (x-mpegURL below) — which also covers extensionless HLS.
+const STREAM_KW   = /(\.m3u8|\.mpd|\/hls\/|\/dash\/|\/(master|playlist|index)[._-]|videoplayback|[?&](m3u8|mpd)=)/i;
 const MEDIA_TYPE  = /^(video|audio)\//i;
 
 const STOCK_SITES = [
@@ -14,33 +18,49 @@ const STOCK_SITES = [
   "vimeo.com","wistia.com","brightcove","jwplatform","akamaized.net","cloudfront.net"
 ];
 
-const VIDEO_HOSTS = [
-  "youtube.com","youtu.be","vimeo.com","tiktok.com","instagram.com",
-  "facebook.com","fb.watch","twitter.com","x.com","twitch.tv",
-  "reddit.com","dailymotion.com","soundcloud.com","bilibili.com",
-  "rumble.com","streamable.com","artgrid.io","artlist.io","pinterest.com"
-];
-
 const tabState  = new Map();
 let   intercept = true;   // global intercept toggle (ON by default — safer narrow scope in content.js)
 let   whitelist = [];     // sites where ZH is disabled
-let   blacklist = [];     // sites where ZH is always active
 
 // ── Storage: load settings ─────────────────────────────────────────────────
-chrome.storage.local.get(["intercept","whitelist","blacklist"], r => {
+chrome.storage.local.get(["intercept","whitelist"], r => {
   intercept = r.intercept !== false;  // default ON (user can disable in popup)
   whitelist = r.whitelist || [];
-  blacklist = r.blacklist || [];
 });
 
 // React to settings changes from popup
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.intercept) intercept = changes.intercept.newValue !== false;
   if (changes.whitelist) whitelist = changes.whitelist.newValue || [];
-  if (changes.blacklist) blacklist = changes.blacklist.newValue || [];
 });
 
 // ── Tab state ──────────────────────────────────────────────────────────────
+// MV3 shuts this service worker down after ~30s idle and `tabState` dies with
+// it. The overlay pill asks for those sniffed streams the moment you click
+// Download on Artlist/Artgrid — if the worker had slept, the list came back
+// EMPTY and the click silently fell back to a page URL yt-dlp can't extract.
+// storage.session is in-memory (never touches disk, cleared when the browser
+// closes) and DOES survive worker restarts, so mirror the map into it.
+const SESSION = (chrome.storage && chrome.storage.session) || null;
+
+function persist() {
+  if (!SESSION) return;
+  const o = {};
+  for (const [k, v] of tabState) if (v && v.length) o[k] = v.slice(0, 40);
+  SESSION.set({ tabState: o }).catch(() => {});
+}
+
+// Every path that answers the content script must await this first, or a
+// just-woken worker reports "nothing sniffed" while the data is still loading.
+const restored = (async () => {
+  if (!SESSION) return;
+  try {
+    const r = await SESSION.get("tabState");
+    const o = r.tabState || {};
+    for (const k in o) if (!tabState.has(+k)) tabState.set(+k, o[k]);
+  } catch {}
+})();
+
 function getTab(id) {
   if (!tabState.has(id)) tabState.set(id, []);
   return tabState.get(id);
@@ -97,6 +117,7 @@ function push(tabId, item) {
   bucket.unshift(item);
   if (bucket.length > 100) bucket.length = 100;
   updateBadge(tabId);
+  persist();
   chrome.runtime.sendMessage({ type:"ZH_UPDATED", tabId, items:bucket }).catch(()=>{});
 }
 
@@ -121,7 +142,9 @@ chrome.webRequest.onResponseStarted.addListener(details => {
     size,    sizeStr: fmtSize(size),
     name:    nameFromUrl(details.url),
     source:  "network",
-    referer: details.url,
+    // the PAGE that pulled the stream, not the stream itself — hotlink-checked
+    // CDNs reject a request whose Referer is the media URL
+    referer: details.initiator || details.url,
     ts:      Date.now()
   });
 }, { urls:["<all_urls>"] }, ["responseHeaders"]);
@@ -158,9 +181,10 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
   if (!isMedia && !isFile) return;
 
   // Check whitelist
+  let tabUrl = "";
   try {
     const tabs = await chrome.tabs.query({ active:true, currentWindow:true });
-    const tabUrl = tabs[0]?.url || "";
+    tabUrl = tabs[0]?.url || "";
     if (whitelist.some(w => tabUrl.includes(w))) return;
   } catch {}
 
@@ -170,10 +194,11 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
     await chrome.downloads.erase({ id: downloadItem.id });
   } catch {}
 
-  const ok = await sendToApp(url);
-  if (!ok.ok) {
-    chrome.downloads.download({ url });
-  }
+  // src:"intercept" marks this as a download we took away from the browser. If
+  // the app never comes up, flushWhenReady() hands it back rather than losing
+  // it — the old `if (!ok.ok) chrome.downloads.download(url)` guard here could
+  // never fire, because sendToApp resolves {ok:true} as soon as it queues.
+  await sendToApp(url, tabUrl || undefined, "", "", "intercept");
 });
 
 // ── Context menu ───────────────────────────────────────────────────────────
@@ -275,21 +300,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "ZH_GET_TAB") {
-    chrome.tabs.query({ active:true, currentWindow:true }, tabs => {
-      if (!tabs.length) { sendResponse({ tabId:null, items:[] }); return; }
-      const tab = tabs[0];
-      sendResponse({
-        tabId: tab.id, url: tab.url, title: tab.title,
-        items: getTab(tab.id),
-        intercept,
-        isDisabled: whitelist.some(w => (tab.url||"").includes(w))
-      });
-    });
+    // await `restored` first: on a freshly-woken service worker the sniffed
+    // streams are still being read back from storage.session, and answering
+    // early is what made Artlist/Artgrid downloads randomly fail.
+    (async () => {
+      await restored;
+      try {
+        const tabs = await chrome.tabs.query({ active:true, currentWindow:true });
+        if (!tabs.length) { sendResponse({ tabId:null, items:[] }); return; }
+        const tab = tabs[0];
+        sendResponse({
+          tabId: tab.id, url: tab.url, title: tab.title,
+          items: getTab(tab.id),
+          intercept,
+          isDisabled: whitelist.some(w => (tab.url||"").includes(w))
+        });
+      } catch { sendResponse({ tabId:null, items:[] }); }
+    })();
     return true;
   }
 
   if (msg.type === "ZH_CLEAR" && msg.tabId != null) {
-    tabState.set(msg.tabId, []); updateBadge(msg.tabId);
+    tabState.set(msg.tabId, []); updateBadge(msg.tabId); persist();
   }
 
   // Popup's Enable/Disable-on-this-site button. Same whitelist the context-menu
@@ -348,14 +380,14 @@ async function postToApp(url, referer, fmt, title) {
   return r.json();
 }
 
-async function sendToApp(url, referer, fmt, title) {
+async function sendToApp(url, referer, fmt, title, src) {
   try {
     const d = await postToApp(url, referer, fmt, title);
     if (d.ok) notify("Sent to ZH Downloader", url.slice(0,60)+"…");
     return d;
   } catch(e) {
     // App is closed → queue it, launch the app, flush when the bridge is up.
-    await queuePending(url, referer);
+    await queuePending(url, referer, src);
     launchApp();
     notify("Opening ZH Downloader…", "Your download will start automatically.");
     flushWhenReady();
@@ -364,10 +396,18 @@ async function sendToApp(url, referer, fmt, title) {
 }
 
 // pending queue (survives until the app comes online)
-async function queuePending(url, referer) {
+// TTL: onStartup flushes this queue, and without an expiry a link queued days
+// ago started downloading out of nowhere the next time the browser opened.
+const PENDING_TTL = 6 * 60 * 60 * 1000;   // 6h
+const isFresh = p => !p.ts || (Date.now() - p.ts) < PENDING_TTL;
+
+async function queuePending(url, referer, src) {
   const { pending = [] } = await chrome.storage.local.get("pending");
-  if (!pending.some(p => p.url === url)) pending.push({ url, referer: referer||url });
-  await chrome.storage.local.set({ pending });
+  const fresh = pending.filter(isFresh);
+  if (!fresh.some(p => p.url === url)) {
+    fresh.push({ url, referer: referer||url, src: src||"", ts: Date.now() });
+  }
+  await chrome.storage.local.set({ pending: fresh });
 }
 
 // launch the desktop app via its URL scheme (only opens it; no data needed).
@@ -385,17 +425,33 @@ function launchApp() {
 let _flushing = false;
 async function flushWhenReady() {
   if (_flushing) return; _flushing = true;
-  for (let i = 0; i < 30; i++) {                 // ~60s window
-    if (await pingApp()) {
-      const { pending = [] } = await chrome.storage.local.get("pending");
-      for (const p of pending) { try { await postToApp(p.url, p.referer); } catch {} }
-      await chrome.storage.local.set({ pending: [] });
-      if (pending.length) notify("ZH Downloader ready", `Sent ${pending.length} download(s).`);
-      break;
+  try {
+    for (let i = 0; i < 30; i++) {                 // ~60s window
+      if (await pingApp()) {
+        const { pending = [] } = await chrome.storage.local.get("pending");
+        const fresh = pending.filter(isFresh);
+        for (const p of fresh) { try { await postToApp(p.url, p.referer); } catch {} }
+        await chrome.storage.local.set({ pending: [] });
+        if (fresh.length) notify("ZH Downloader ready", `Sent ${fresh.length} download(s).`);
+        return;
+      }
+      await new Promise(r => setTimeout(r, 2000));
     }
-    await new Promise(r => setTimeout(r, 2000));
-  }
-  _flushing = false;
+    // App never came up. Downloads we cancelled in the browser would just
+    // vanish, so hand those back to the browser. Everything else stays queued
+    // (right-click sends, stream URLs) until the app runs or the TTL drops it.
+    const { pending = [] } = await chrome.storage.local.get("pending");
+    const keep = [];
+    let handed = 0;
+    for (const p of pending) {
+      if (!isFresh(p)) continue;
+      if (p.src === "intercept") {
+        try { chrome.downloads.download({ url: p.url }); handed++; } catch {}
+      } else keep.push(p);
+    }
+    await chrome.storage.local.set({ pending: keep });
+    if (handed) notify("ZH Downloader didn't start", `${handed} download(s) handed back to the browser.`);
+  } finally { _flushing = false; }
 }
 
 async function pingApp() {
@@ -427,16 +483,16 @@ function notify(title, body) {
 }
 
 // ── Cleanup ────────────────────────────────────────────────────────────────
-chrome.tabs.onRemoved.addListener(tabId => tabState.delete(tabId));
+chrome.tabs.onRemoved.addListener(tabId => { tabState.delete(tabId); persist(); });
 if (chrome.webNavigation) {
   chrome.webNavigation.onCommitted.addListener(d => {
-    if (d.frameId === 0) { tabState.set(d.tabId, []); updateBadge(d.tabId); }
+    if (d.frameId === 0) { tabState.set(d.tabId, []); updateBadge(d.tabId); persist(); }
   });
   // SPA route changes (Artgrid/Artlist/YouTube navigate via history.pushState —
   // no onCommitted fires). Without this, streams sniffed on PREVIOUS clips pile
   // up in the tab list and the pill's auto-pick grabs a STALE master m3u8 →
   // "same video downloads again / wrong video downloads".
   chrome.webNavigation.onHistoryStateUpdated.addListener(d => {
-    if (d.frameId === 0) { tabState.set(d.tabId, []); updateBadge(d.tabId); }
+    if (d.frameId === 0) { tabState.set(d.tabId, []); updateBadge(d.tabId); persist(); }
   });
 }
