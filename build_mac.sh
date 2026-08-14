@@ -133,10 +133,35 @@ fi
 # Ad-hoc codesign — without a signature, Apple Silicon calls the downloaded app
 # "damaged" with no easy bypass. Ad-hoc turns it into the normal "unidentified
 # developer" prompt that a one-time right-click → Open clears.
-echo "==> Ad-hoc signing"
-xattr -cr "dist/$APP_BUNDLE" 2>/dev/null || true
-codesign --force --deep --sign - "dist/$APP_BUNDLE" || echo "  ⚠ codesign failed"
-codesign --verify --deep --strict "dist/$APP_BUNDLE" >/dev/null 2>&1 && echo "  signed ✓" || true
+#
+# This has to happen OUTSIDE iCloud. This repo lives on the iCloud Desktop, and
+# iCloud re-attaches com.apple.FinderInfo + com.apple.fileprovider.fpfs#P to
+# Contents/Frameworks/Python.framework (and the Resources/ symlink pointing at
+# it) after PyInstaller writes them. codesign then refuses with "resource fork,
+# Finder information, or similar detritus not allowed", spctl rejects the app,
+# and clients get the "damaged app" warning we sign to avoid. Note `xattr -cr`
+# is NOT enough — the attrs sit on the SYMLINK, so -s (no-follow) is required.
+WORK="$(mktemp -d /tmp/zhbuild.XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT INT TERM
+SIGNED="$WORK/$APP_BUNDLE"
+
+echo "==> Ad-hoc signing (staged in $WORK, outside iCloud)"
+ditto "dist/$APP_BUNDLE" "$SIGNED"
+find "$SIGNED" -exec xattr -c -s {} \; 2>/dev/null || true
+xattr -cr "$SIGNED" 2>/dev/null || true
+codesign --force --deep --sign - "$SIGNED" 2>&1 | sed 's/^/    /'
+if codesign --verify --deep --strict "$SIGNED" 2>/dev/null; then
+  echo "  signed ✓"
+else
+  echo "  ✗ codesign verify FAILED — clients would see \"app is damaged\"."
+  codesign --verify --deep --strict --verbose=2 "$SIGNED" 2>&1 | sed 's/^/    /' | head -5
+  exit 1
+fi
+
+# Ship the signed copy back into dist/ too, so local testing runs what clients get.
+# (iCloud will re-dirty this copy; the dmg/pkg below are built from $SIGNED.)
+rm -rf "dist/$APP_BUNDLE"
+ditto "$SIGNED" "dist/$APP_BUNDLE"
 
 echo "==> 5/6 Build .dmg"
 rm -f "$DMG_NAME"
@@ -150,7 +175,7 @@ if command -v create-dmg >/dev/null 2>&1; then
     --app-drop-link 400 180 \
     --no-internet-enable \
     "$DMG_NAME" \
-    "dist/$APP_BUNDLE" || {
+    "$SIGNED" || {
       echo "    create-dmg failed, using hdiutil"
       USE_HDIUTIL=1
     }
@@ -160,9 +185,9 @@ else
 fi
 
 if [ "${USE_HDIUTIL:-0}" = "1" ]; then
-  STAGE_DIR="$(mktemp -d)/dmg-stage"
+  STAGE_DIR="$WORK/dmg-stage"
   mkdir -p "$STAGE_DIR"
-  cp -R "dist/$APP_BUNDLE" "$STAGE_DIR/"
+  ditto "$SIGNED" "$STAGE_DIR/$APP_BUNDLE"
   ln -s /Applications "$STAGE_DIR/Applications"
   hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE_DIR" -ov -format UDZO "$DMG_NAME"
   rm -rf "$STAGE_DIR"
@@ -172,17 +197,17 @@ echo "==> 6/6 Build .pkg (installer wizard)"
 rm -f "$PKG_NAME"
 
 # ── Stage layout: /Applications/ZH Downloader.app ──
-PKG_ROOT="$(mktemp -d)"
+PKG_ROOT="$WORK/pkg-root"; mkdir -p "$PKG_ROOT"
 mkdir -p "$PKG_ROOT/Applications"
-cp -R "dist/$APP_BUNDLE" "$PKG_ROOT/Applications/"
+ditto "$SIGNED" "$PKG_ROOT/Applications/$APP_BUNDLE"
 
 # ── Component package (saved as a .pkg file, not a directory) ──
-COMP_DIR="$(mktemp -d)"
+COMP_DIR="$WORK/comp"; mkdir -p "$COMP_DIR"
 COMP_PKG="$COMP_DIR/component.pkg"
 
 # postinstall strips quarantine so the unsigned app opens without the
 # macOS "damaged"/"can't be opened" warning after install.
-SCR_DIR="$(mktemp -d)"
+SCR_DIR="$WORK/scripts"; mkdir -p "$SCR_DIR"
 printf '#!/bin/sh\n/usr/bin/xattr -cr "/Applications/ZH Downloader.app" 2>/dev/null || true\nexit 0\n' > "$SCR_DIR/postinstall"
 chmod +x "$SCR_DIR/postinstall"
 
