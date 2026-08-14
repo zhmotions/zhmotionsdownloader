@@ -97,6 +97,8 @@ function rechandlers(ctx) { return _handlers.get(ctx) || []; }
     const { ctx, rec } = makeCtx();
     _handlers.set(ctx, rec.listeners.msg || []);
     ctx.push(7, { url: "https://cdn.artlist.io/a/master.m3u8", type: "HLS", name: "a" });
+    // the very first persist waits for the restore to settle before publishing
+    await new Promise(r => setTimeout(r, 0));
     eq("session mirror written", Object.keys(rec.session.tabState || {}), ["7"]);
 
     // worker dies; only storage.session survives
@@ -106,6 +108,20 @@ function rechandlers(ctx) { return _handlers.get(ctx) || []; }
     eq("after worker restart: streams restored", (resp.items || []).length, 1);
     eq("after worker restart: correct url", (resp.items || [])[0] && resp.items[0].url,
        "https://cdn.artlist.io/a/master.m3u8");
+
+    // A webRequest that wakes the worker lands BEFORE the session read resolves.
+    // push() therefore creates the bucket first; the restore must merge into it,
+    // not skip the tab, and must not publish its half-empty map over the saved one.
+    const race = makeCtx({ session: rec.session });
+    _handlers.set(race.ctx, race.rec.listeners.msg || []);
+    race.ctx.push(7, { url: "https://cdn.artlist.io/b/fresh.m3u8", type: "HLS", name: "b" });
+    const merged = await zhGetTab(race.ctx);
+    eq("race: freshly sniffed stream kept", (merged.items || []).map(i => i.url).includes(
+       "https://cdn.artlist.io/b/fresh.m3u8"), true);
+    eq("race: previously saved stream NOT lost", (merged.items || []).map(i => i.url).includes(
+       "https://cdn.artlist.io/a/master.m3u8"), true);
+    await new Promise(r => setTimeout(r, 0));
+    eq("race: session still holds both", (race.rec.session.tabState["7"] || []).length, 2);
 
     // same restart on the OLD in-memory-only design would report nothing
     const cold = makeCtx();

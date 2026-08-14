@@ -43,8 +43,16 @@ chrome.storage.onChanged.addListener((changes) => {
 // closes) and DOES survive worker restarts, so mirror the map into it.
 const SESSION = (chrome.storage && chrome.storage.session) || null;
 
+let restoreDone = false;
+
+// Writes the WHOLE map, so it must never run before the restore below has
+// merged what was already saved — a woken worker that persists first would
+// publish its half-empty map and wipe every other tab's sniffed streams.
+// Only that brief window defers; once restored it writes straight through, so
+// a worker killed right after sniffing still has the stream on disk.
 function persist() {
   if (!SESSION) return;
+  if (!restoreDone) { restored.then(persist); return; }
   const o = {};
   for (const [k, v] of tabState) if (v && v.length) o[k] = v.slice(0, 40);
   SESSION.set({ tabState: o }).catch(() => {});
@@ -57,8 +65,20 @@ const restored = (async () => {
   try {
     const r = await SESSION.get("tabState");
     const o = r.tabState || {};
-    for (const k in o) if (!tabState.has(+k)) tabState.set(+k, o[k]);
+    for (const k in o) {
+      const id = +k, saved = o[k] || [];
+      const live = tabState.get(id);
+      // A webRequest can wake the worker and fill this tab's bucket before the
+      // read above resolves. Skipping the tab then would throw away exactly the
+      // streams this whole mechanism exists to keep, so merge instead — newly
+      // sniffed items stay on top, saved ones follow.
+      if (!live || !live.length) { tabState.set(id, saved); continue; }
+      const seen = new Set(live.map(i => i && i.url));
+      for (const it of saved) if (it && !seen.has(it.url)) live.push(it);
+      if (live.length > 100) live.length = 100;
+    }
   } catch {}
+  restoreDone = true;
 })();
 
 function getTab(id) {
