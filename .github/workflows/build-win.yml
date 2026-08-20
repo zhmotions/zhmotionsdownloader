@@ -67,7 +67,18 @@ jobs:
       - name: Fetch QuickJS runtime (Facebook/YouTube JS challenges)
         shell: pwsh
         run: |
-          curl.exe -fsSL -o qjs.exe https://github.com/quickjs-ng/quickjs/releases/latest/download/qjs-windows-x86_64.exe
+          # /releases/latest/download/ broke when upstream published a release
+          # with no binaries attached (v0.16.2), 404ing the whole build. Walk the
+          # recent releases and take the newest one that actually ships the exe.
+          $asset = $null
+          $rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/quickjs-ng/quickjs/releases?per_page=15' `
+                                    -Headers @{ 'User-Agent' = 'zh-downloader-ci' }
+          foreach ($r in $rels) {
+            $a = $r.assets | Where-Object { $_.name -eq 'qjs-windows-x86_64.exe' } | Select-Object -First 1
+            if ($a) { $asset = $a; Write-Host "QuickJS from $($r.tag_name)"; break }
+          }
+          if (-not $asset) { throw 'no quickjs-ng release ships qjs-windows-x86_64.exe' }
+          curl.exe -fsSL -o qjs.exe $asset.browser_download_url
           dir qjs.exe
 
       - name: Build EXE
