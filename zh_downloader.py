@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.22"
+APP_VER     = "6.6.23"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -255,6 +255,19 @@ TEXT_SIZES = {"Small": 0.9, "Default": 1.0, "Large": 1.15, "Extra large": 1.3}
 
 def _def_theme_name():
     return "macOS" if platform.system() == "Darwin" else "Light"
+
+def _pinterest_master(url):
+    """Pinterest HLS: turn a single-quality variant into the master playlist.
+
+    The browser plays whatever rendition its player picked (often 240w/540w), so
+    the sniffer hands us e.g. `<hash>_540w.m3u8` — one fixed, low quality. The
+    master `<hash>.m3u8` lists the whole ladder, so yt-dlp can take the best one
+    (and the audio rendition, when the pin has sound)."""
+    m = re.match(r"^(https://[^/]*pinimg\.com/videos/[^?]*?/([0-9a-f]{8,}))_\d{2,4}w\.m3u8(\?.*)?$",
+                 url or "", re.I)
+    if not m: return url
+    return "%s.m3u8%s" % (m.group(1), m.group(3) or "")
+
 
 def _error_hint(msg, url=""):
     """Turn yt-dlp's raw failure into the one line that tells the user what to do.
@@ -1250,11 +1263,16 @@ class App:
               background=[("selected",T["SURF"]),("active",T["BG"])],
               foreground=[("selected",T["ACCENT"]),("active",T["TEXT"])],
               lightcolor=[("selected",T["SURF"])], darkcolor=[("selected",T["SURF"])])
+        # History table: taller rows so the bigger type fits, flat headers, and
+        # the accent colour for the selected row instead of the pale MAROON tint
         s.configure("Treeview", background=T["SURF"], foreground=T["TEXT"],
-                    fieldbackground=T["SURF"], borderwidth=0, font=_f(10))
-        s.configure("Treeview.Heading", background=T["SURF2"], foreground=T["MUTED"],
-                    font=_f(9,"bold"), borderwidth=0)
-        s.map("Treeview", background=[("selected",T["MAROON"])], foreground=[("selected",T["TEXT"])])
+                    fieldbackground=T["SURF"], borderwidth=0, font=_f(9),
+                    rowheight=int(26 * UI_SCALE))
+        s.configure("Treeview.Heading", background=T["BG"], foreground=T["MUTED"],
+                    font=_f(8,"bold"), borderwidth=0, relief="flat", padding=(6,6))
+        s.map("Treeview.Heading", background=[("active",T["SURF2"])])
+        s.map("Treeview", background=[("selected",T["ACCENT"])],
+              foreground=[("selected","#ffffff")])
         s.configure("TScale", background=T["BG"], troughcolor=T["SURF2"])
 
     # -- UI -----------------------------------------------------------------
@@ -1507,9 +1525,9 @@ class App:
     # -- Tab: History -------------------------------------------------------
     def _tab_history(self):
         tab = ttk.Frame(self.nb); self.nb.add(tab, text="   History   ")
-        top = tk.Frame(tab, bg=T["BG"]); top.pack(fill="x", padx=4, pady=10)
+        top = tk.Frame(tab, bg=T["BG"]); top.pack(fill="x", padx=6, pady=(12,8))
         tk.Label(top, text="Past Downloads", bg=T["BG"], fg=T["ACCENT"],
-                 font=_f(13,"bold")).pack(side="left")
+                 font=_f(12,"bold")).pack(side="left")
         self.hist_search = tk.StringVar()
         e = self._entry(top, self.hist_search); e.pack(side="right", padx=(8,0))
         e.configure(width=24)
@@ -1521,13 +1539,19 @@ class App:
         self.hist_search.trace_add("write", lambda *a: self._hist_refresh())
 
         cols = ("name","cat","size","when","url")
-        self.hist_tree = ttk.Treeview(tab, columns=cols, show="headings", height=18)
+        hist_panel = RoundedPanel(tab, radius=12)
+        hist_panel.pack(fill="both", expand=True, padx=6, pady=(0,4))
+        self.hist_tree = ttk.Treeview(hist_panel.inner, columns=cols,
+                                      show="headings", height=18)
         for c,t,w in [("name","Name",340),("cat","Category",90),("size","Size",90),
                       ("when","When",140),("url","URL",260)]:
             self.hist_tree.heading(c, text=t)
             self.hist_tree.column(c, width=w, anchor="w")
-        self.hist_tree.pack(fill="both", expand=True, padx=4)
-        hsb = ttk.Scrollbar(tab, orient="vertical", command=self.hist_tree.yview)
+        self.hist_tree.tag_configure("odd", background=T["BG"])
+        self.hist_tree.tag_configure("even", background=T["SURF"])
+        self.hist_tree.pack(side="left", fill="both", expand=True, padx=(8,0), pady=8)
+        hsb = ttk.Scrollbar(hist_panel.inner, orient="vertical", command=self.hist_tree.yview)
+        hsb.pack(side="right", fill="y", pady=8)
         self.hist_tree.configure(yscrollcommand=hsb.set)
         self.hist_tree.bind("<Double-1>", self._hist_open)
         self.hist_tree.bind("<Button-2>", self._hist_menu)   # mac right-click
@@ -1535,7 +1559,7 @@ class App:
         self._hist_refresh()
 
         # Bottom actions
-        bot = tk.Frame(tab, bg=T["BG"]); bot.pack(fill="x", padx=4, pady=(6,10))
+        bot = tk.Frame(tab, bg=T["BG"]); bot.pack(fill="x", padx=6, pady=(6,10))
         ttk.Button(bot, text="Open File",     style="Ghost.TButton",
                    command=lambda: self._hist_open(None)).pack(side="left", padx=(0,6))
         ttk.Button(bot, text="Reveal in Folder", style="Ghost.TButton",
@@ -1548,14 +1572,14 @@ class App:
     def _hist_refresh(self):
         for i in self.hist_tree.get_children(): self.hist_tree.delete(i)
         items = self.history.filter(self.hist_search.get())
-        for r in items:
+        for i, r in enumerate(items):
             self.hist_tree.insert("","end", values=(
                 r.get("name",""),
                 r.get("category","Other"),
                 sz(r.get("size",0)) if r.get("size") else "-",
                 r.get("ts","").replace("T"," "),
                 r.get("url","")[:120],
-            ), tags=(r.get("path",""),))
+            ), tags=(r.get("path",""), "even" if i % 2 else "odd"))
 
     def _hist_sel_path(self):
         sel = self.hist_tree.selection()
@@ -1626,16 +1650,16 @@ class App:
         for w in self.stats_tab.winfo_children(): w.destroy()
         d = self.stats.data
 
-        head = tk.Frame(self.stats_tab, bg=T["BG"]); head.pack(fill="x", padx=4, pady=10)
+        head = tk.Frame(self.stats_tab, bg=T["BG"]); head.pack(fill="x", padx=6, pady=(12,8))
         tk.Label(head, text="Lifetime Statistics", bg=T["BG"], fg=T["ACCENT"],
-                 font=_f(13,"bold")).pack(side="left")
+                 font=_f(12,"bold")).pack(side="left")
         ttk.Button(head, text="Refresh", style="Ghost.TButton",
                    command=self._build_stats_view).pack(side="right")
         ttk.Button(head, text="Reset Stats", style="Danger.TButton",
                    command=self._reset_stats).pack(side="right", padx=(0,6))
 
         # Big numbers
-        nums = tk.Frame(self.stats_tab, bg=T["BG"]); nums.pack(fill="x", padx=4, pady=10)
+        nums = tk.Frame(self.stats_tab, bg=T["BG"]); nums.pack(fill="x", padx=6, pady=(0,10))
         cards = [
             ("Files",        f"{d.get('total_files',0):,}",      T["ACCENT"]),
             ("Total Data",   sz(d.get('total_bytes',0)),          T["GREEN"]),
@@ -1644,13 +1668,15 @@ class App:
             ("Sessions",     f"{d.get('sessions',0):,}",          T["PURPLE"]),
         ]
         for label, val, col in cards:
-            c = tk.Frame(nums, bg=T["SURF"], padx=14, pady=12)
-            c.pack(side="left", padx=4, fill="both", expand=True)
-            tk.Label(c, text=val,  bg=T["SURF"], fg=col, font=_f(18,"bold")).pack(anchor="w")
-            tk.Label(c, text=label, bg=T["SURF"], fg=T["MUTED"], font=_f(9)).pack(anchor="w")
+            tile = RoundedPanel(nums, radius=12)
+            tile.pack(side="left", padx=3, fill="both", expand=True)
+            c = tk.Frame(tile.inner, bg=T["SURF"], padx=12, pady=10)
+            c.pack(fill="both", expand=True)
+            tk.Label(c, text=val,  bg=T["SURF"], fg=col, font=_f(16,"bold")).pack(anchor="w")
+            tk.Label(c, text=label, bg=T["SURF"], fg=T["MUTED"], font=_f(8)).pack(anchor="w")
 
         # By category bar
-        cat_frame = tk.Frame(self.stats_tab, bg=T["BG"]); cat_frame.pack(fill="x", padx=4, pady=10)
+        cat_frame = tk.Frame(self.stats_tab, bg=T["BG"]); cat_frame.pack(fill="x", padx=6, pady=(0,10))
         tk.Label(cat_frame, text="Files by Category", bg=T["BG"], fg=T["MUTED"],
                  font=_f(10,"bold")).pack(anchor="w", pady=(0,6))
         cats = d.get("by_category",{}) or {}
@@ -1658,15 +1684,24 @@ class App:
         for cat, n in sorted(cats.items(), key=lambda x:-x[1]):
             row = tk.Frame(cat_frame, bg=T["BG"]); row.pack(fill="x", pady=2)
             tk.Label(row, text=cat, bg=T["BG"], fg=T["TEXT"], width=12, anchor="w",
-                     font=_f(10)).pack(side="left")
-            bar_outer = tk.Frame(row, bg=T["SURF2"], height=16); bar_outer.pack(side="left", fill="x", expand=True, padx=8)
+                     font=_f(9)).pack(side="left")
             frac = n/total
-            tk.Frame(bar_outer, bg=T["ACCENT"], height=16, width=int(400*frac)).place(x=0,y=0)
+            bar = tk.Canvas(row, bg=T["BG"], height=10, highlightthickness=0, bd=0)
+            bar.pack(side="left", fill="x", expand=True, padx=8)
+            def _paint(_e=None, cv=bar, f=frac):
+                w, h = cv.winfo_width(), 10
+                cv.delete("all")
+                cv.create_line(5, h/2, max(6, w-5), h/2, fill=T["SURF2"], width=8,
+                               capstyle="round")
+                if f > 0:
+                    cv.create_line(5, h/2, max(6, 5 + (w-10) * f), h/2, fill=T["ACCENT"],
+                                   width=8, capstyle="round")
+            bar.bind("<Configure>", _paint)
             tk.Label(row, text=f"{n}", bg=T["BG"], fg=T["MUTED"], width=8, anchor="e",
                      font=_f(10)).pack(side="right")
 
         # By day (last 14)
-        day_frame = tk.Frame(self.stats_tab, bg=T["BG"]); day_frame.pack(fill="x", padx=4, pady=10)
+        day_frame = tk.Frame(self.stats_tab, bg=T["BG"]); day_frame.pack(fill="x", padx=6, pady=(0,10))
         tk.Label(day_frame, text="Last 14 Days (Data)", bg=T["BG"], fg=T["MUTED"],
                  font=_f(10,"bold")).pack(anchor="w", pady=(0,6))
         import datetime as _dt
@@ -2459,6 +2494,10 @@ class App:
         else:
             url, referer = payload, ""
         self._ext_seen = True
+        _master = _pinterest_master(url)
+        if _master != url:
+            self.log("[info] Pinterest: using the master playlist for full quality")
+            url = _master
         if not self._licensed():
             self.log("[license] activation key required — download blocked")
             self._restore_window()

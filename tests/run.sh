@@ -53,6 +53,10 @@ echo "== background.js (node vm + stubbed chrome API) =="
 node "$here/bg.test.js" "$root/extension/background.js"
 
 echo
+echo "== sniffed-stream scoring (pickSniffed) =="
+node "$here/sniff_score_test.js" "$root/extension/content.js"
+
+echo
 echo "== content.js re-injection (headless Chrome) =="
 if [ ! -x "$CHROME" ]; then
   echo "SKIP: Chrome not found at $CHROME (set CHROME=/path/to/chrome)"

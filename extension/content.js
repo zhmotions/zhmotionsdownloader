@@ -500,7 +500,10 @@
       // res/bitrate token is a single quality — often the low autoplay preview.
       var isHls = u.indexOf(".m3u8") >= 0 || t === "hls";
       if (isHls && /(master|playlist|index)\.m3u8/.test(u)) return 6;
-      if (isHls && !/(\d{3,4}p|\/(360|480|540|720|1080|1440|2160)\/|_(360|480|540|720)_)/.test(u)) return 5;
+      // Pinterest names its renditions `<hash>_540w.m3u8` / `_720w.m3u8`; without
+      // the _\d+w case a variant scored as high as the master and could win,
+      // which is how a pin came down at 540w instead of its best rendition.
+      if (isHls && !/(\d{3,4}p|\/(360|480|540|720|1080|1440|2160)\/|_(360|480|540|720)_|_\d{2,4}w\.m3u8)/.test(u)) return 5;
       if (isHls) return 4;
       if (u.indexOf(".mpd") >= 0) return 3;
       if (/\.(mp4|mkv|mov|webm|m4v)(\?|$)/.test(u)) return 2;

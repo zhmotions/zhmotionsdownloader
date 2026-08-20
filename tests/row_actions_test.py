@@ -87,6 +87,20 @@ web.calls.clear()
 app._open_source(mk("/Users/me/local.mp4"))
 eq("a local file has no source page", web.calls, [])
 
+# ── Pinterest: variant playlist → master (full quality) ──────────────────
+H = "https://v1.pinimg.com/videos/iht/hls/23/65/73/abc123abc123def"
+eq("a 540w variant is rewritten to the master",
+   zhd._pinterest_master(H + "_540w.m3u8"), H + ".m3u8")
+eq("a 720w variant too", zhd._pinterest_master(H + "_720w.m3u8"), H + ".m3u8")
+eq("query strings survive", zhd._pinterest_master(H + "_240w.m3u8?a=1"), H + ".m3u8?a=1")
+eq("the master is left alone", zhd._pinterest_master(H + ".m3u8"), H + ".m3u8")
+eq("other CDNs are untouched",
+   zhd._pinterest_master("https://cdn.artlist.io/a/master_720w.m3u8"),
+   "https://cdn.artlist.io/a/master_720w.m3u8")
+eq("a pin page URL is untouched",
+   zhd._pinterest_master("https://www.pinterest.com/pin/123/"),
+   "https://www.pinterest.com/pin/123/")
+
 # ── error hints (what the user should DO about a failure) ────────────────
 eq("vimeo login wall names the site",
    "vimeo.com" in zhd._error_hint("ERROR: [vimeo] The web client only works when logged-in.",
