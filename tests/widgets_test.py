@@ -81,6 +81,34 @@ eq("callback sees the new value", fired, [True])
 sw._toggle()
 eq("toggle turns it off", bv.get(), False)
 
+# ── RoundedSlider ────────────────────────────────────────────────────────
+saved = []
+iv = tk.IntVar(value=3)
+sl = zhd.RoundedSlider(frame, iv, from_=1, to=5, step=1, width=100,
+                       command=lambda v: saved.append(v))
+eq("slider was created", bool(sl.winfo_exists()), True)
+
+
+class E:                       # a click at a given x
+    def __init__(self, x): self.x = x
+
+
+sl._set_from_x(E(8 + 100))     # far right = max
+eq("dragging to the end gives the max", iv.get(), 5)
+sl._set_from_x(E(8))           # far left = min
+eq("dragging to the start gives the min", iv.get(), 1)
+sl._set_from_x(E(-50))         # outside the track
+eq("out-of-track drags clamp", iv.get(), 1)
+eq("every change was saved", saved, [5, 1])
+
+# ── RoundedPanel ─────────────────────────────────────────────────────────
+panel = zhd.RoundedPanel(frame, radius=10)
+tk.Label(panel.inner, text="card content").pack()
+panel.pack(fill="x")
+root.update_idletasks()
+eq("panel has an inner content frame", bool(panel.inner.winfo_exists()), True)
+eq("panel accepts a ttk parent bg lookup", zhd._pbg(panel) != "", True)
+
 root.destroy()
 print()
 print(("%d FAILED, " % fails if fails else "") + "%d passed" % passes)

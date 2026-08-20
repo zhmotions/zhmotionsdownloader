@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.21"
+APP_VER     = "6.6.22"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -322,6 +322,12 @@ def _tip(widget, text):
     widget.bind("<Destroy>", hide, add="+")
 
 
+def _pbg(widget):
+    """Parent background — ttk widgets have no -bg option, so fall back to theme."""
+    try: return widget.cget("bg")
+    except Exception: return T["BG"]
+
+
 class RoundedButton(tk.Canvas):
     """Primary action button. Tk ships no rounded widget, so this draws one:
     a rounded rect + centred label, with hover / pressed / disabled fills.
@@ -342,7 +348,7 @@ class RoundedButton(tk.Canvas):
         # widget pathname, and shadowing it breaks every later Tk call.
         self._bw, self._bh = w, h
         super().__init__(parent, width=w, height=h, highlightthickness=0,
-                         bd=0, bg=parent.cget("bg"), cursor="hand2", **kw)
+                         bd=0, bg=_pbg(parent), cursor="hand2", **kw)
         self.bind("<Button-1>",        self._press)
         self.bind("<ButtonRelease-1>", self._release)
         self.bind("<Enter>", lambda e: self._set_hover(True))
@@ -415,7 +421,7 @@ class RoundedSelect(tk.Canvas):
         h = f.metrics("linespace") + 16
         self._bw, self._bh = width, h
         super().__init__(parent, width=width, height=h, highlightthickness=0, bd=0,
-                         bg=parent.cget("bg"), cursor="hand2", **kw)
+                         bg=_pbg(parent), cursor="hand2", **kw)
         self._menu = tk.Menu(self, tearoff=0, bg=T["SURF"], fg=T["TEXT"],
                              activebackground=T["ACCENT"], activeforeground="#ffffff",
                              font=self._font, bd=0)
@@ -450,6 +456,83 @@ class RoundedSelect(tk.Canvas):
                          anchor="e")
 
 
+class RoundedSlider(tk.Canvas):
+    """Track + knob slider matching the other custom controls. tk.Scale draws a
+    boxy 1990s trough that looked out of place next to the pill switches."""
+
+    def __init__(self, parent, variable, from_=0, to=100, step=1, width=230,
+                 command=None, suffix="", **kw):
+        self._var, self._min, self._max = variable, from_, to
+        self._step, self._cmd, self._suffix = step, command, suffix
+        self._font = _f(9)
+        self._tw = width                      # track width
+        h = 26
+        self._bw, self._bh = width + 74, h
+        super().__init__(parent, width=self._bw, height=h, highlightthickness=0,
+                         bd=0, bg=_pbg(parent), cursor="hand2", **kw)
+        self.bind("<Button-1>", self._set_from_x)
+        self.bind("<B1-Motion>", self._set_from_x)
+        try: variable.trace_add("write", lambda *a: self._draw())
+        except Exception: pass
+        self._draw()
+
+    def _clamp(self, v):
+        v = max(self._min, min(self._max, v))
+        if self._step: v = round(v / self._step) * self._step
+        return int(v)
+
+    def _set_from_x(self, e):
+        frac = min(1.0, max(0.0, (e.x - 8) / max(1, self._tw)))
+        val = self._clamp(self._min + frac * (self._max - self._min))
+        if val != self._var.get():
+            self._var.set(val)
+            if self._cmd: self._cmd(val)
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        try: val = float(self._var.get())
+        except Exception: val = self._min
+        frac = 0 if self._max == self._min else (val - self._min) / (self._max - self._min)
+        y = self._bh / 2
+        x0, x1 = 8, 8 + self._tw
+        self.create_line(x0, y, x1, y, fill=T["SURF2"], width=6, capstyle="round")
+        kx = x0 + frac * self._tw
+        if kx > x0 + 1:
+            self.create_line(x0, y, kx, y, fill=T["ACCENT"], width=6, capstyle="round")
+        self.create_oval(kx - 8, y - 8, kx + 8, y + 8, fill="#ffffff",
+                         outline=T["BORDER"])
+        self.create_text(x1 + 12, y, text=f"{int(val)}{self._suffix}", anchor="w",
+                         fill=T["TEXT"], font=self._font)
+
+
+class RoundedPanel(tk.Frame):
+    """Card with rounded corners. A Tk frame is always a rectangle, so the shape
+    is painted on a canvas that sits behind the content frame."""
+
+    def __init__(self, parent, radius=12, fill=None, border=None, pad=6, **kw):
+        super().__init__(parent, bg=_pbg(parent), **kw)
+        self._radius = radius
+        self._fillc  = fill or T["SURF"]
+        self._border = border or T["BORDER"]
+        self._cv = tk.Canvas(self, bg=_pbg(parent), highlightthickness=0, bd=0)
+        self._cv.place(x=0, y=0, relwidth=1, relheight=1)
+        # inset by pad so the painted corners stay visible around the content
+        self.inner = tk.Frame(self, bg=self._fillc)
+        self.inner.grid(row=0, column=0, padx=pad, pady=pad, sticky="nsew")
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.bind("<Configure>", self._redraw)
+
+    def _redraw(self, _=None):
+        w, h, r = self.winfo_width(), self.winfo_height(), self._radius
+        if w < 4 or h < 4: return
+        self._cv.delete("all")
+        pts = [r,0, w-r,0, w,0, w,r, w,h-r, w,h, w-r,h, r,h, 0,h, 0,h-r, 0,r, 0,0]
+        self._cv.create_polygon(pts, smooth=True, fill=self._fillc,
+                                outline=self._border)
+
+
 class Switch(tk.Canvas):
     """iOS-style pill toggle for BooleanVars — the Tk checkbox indicator can't be
     restyled, and its ☒ mark looked like a 1998 dialog."""
@@ -464,7 +547,7 @@ class Switch(tk.Canvas):
         h = max(self._ph, f.metrics("linespace")) + 6
         self._bw, self._bh = w, h
         super().__init__(parent, width=w, height=h, highlightthickness=0, bd=0,
-                         bg=parent.cget("bg"), cursor="hand2", **kw)
+                         bg=_pbg(parent), cursor="hand2", **kw)
         self.bind("<Button-1>", self._toggle)
         try: variable.trace_add("write", lambda *a: self._draw())
         except Exception: pass
@@ -1054,14 +1137,16 @@ class App:
         except Exception: pass
         # Window grows with the text-size setting — at "Extra large" the action
         # row (Download … Clear Queue) no longer fits 1100 px and buttons fell off.
-        root.geometry("%dx%d" % (int(1200 * UI_SCALE), int(860 * UI_SCALE)))
-        root.minsize(int(940 * UI_SCALE), int(660 * UI_SCALE))
+        # denser layout after the compaction pass → the window no longer needs
+        # 860 px of height to show the queue, the log and the whole Settings tab
+        root.geometry("%dx%d" % (int(1180 * UI_SCALE), int(780 * UI_SCALE)))
+        root.minsize(int(900 * UI_SCALE), int(600 * UI_SCALE))
         root.configure(bg=T["BG"])
         # Center on screen
         root.update_idletasks()
         try:
             sw = root.winfo_screenwidth(); sh = root.winfo_screenheight()
-            _w, _h = int(1100 * UI_SCALE), int(800 * UI_SCALE)
+            _w, _h = int(1100 * UI_SCALE), int(740 * UI_SCALE)
             _w, _h = min(_w, sw - 40), min(_h, sh - 80)
             x = max(0, (sw - _w) // 2); y = max(0, (sh - _h) // 2)
             root.geometry(f"{_w}x{_h}+{x}+{y}")
@@ -1141,6 +1226,13 @@ class App:
         s.map("Ghost.TButton",
               background=[("active",T["SURF"]),("disabled",T["BG"])],
               foreground=[("active",T["TEXT"]),("disabled",T["MUTED"])])
+        # row actions: same ghost look, tighter so four fit on one line
+        s.configure("Row.TButton", background=T["SURF2"], foreground=T["TEXT"],
+                    font=_f(9), padding=(4,3), borderwidth=1, relief="flat",
+                    bordercolor=T["BORDER"], lightcolor=T["SURF2"], darkcolor=T["SURF2"])
+        s.map("Row.TButton",
+              background=[("active",T["SURF"]),("disabled",T["SURF"])],
+              foreground=[("active",T["TEXT"]),("disabled",T["MUTED"])])
         s.configure("Danger.TButton", background=T["RED"], foreground="#ffffff",
                     font=_f(10,"bold"), padding=(10,7), borderwidth=0, relief="flat")
         s.configure("TProgressbar", troughcolor=T["SURF2"], background=T["ACCENT"],
@@ -1171,11 +1263,11 @@ class App:
         self._config_styles(s)
 
         # Header — slimmer
-        hdr = tk.Frame(self.root, bg=T["HEADER"], height=70)
+        hdr = tk.Frame(self.root, bg=T["HEADER"], height=58)
         hdr.pack(fill="x"); hdr.pack_propagate(False)
         # Subtle bottom border
         tk.Frame(self.root, bg=T["BORDER"], height=1).pack(fill="x")
-        hi = tk.Frame(hdr, bg=T["HEADER"]); hi.pack(fill="both", expand=True, padx=20, pady=10)
+        hi = tk.Frame(hdr, bg=T["HEADER"]); hi.pack(fill="both", expand=True, padx=22, pady=6)
         lp = self._r("header-logo.png")
         if lp:
             try:
@@ -1209,16 +1301,16 @@ class App:
         # Paste box + the one primary button, side by side: paste a link, click
         # Download. Everything else moved below into the tabs / Advanced options.
         bar = tk.Frame(self.root, bg=T["BG"])
-        bar.pack(fill="x", padx=26, pady=(18,10))
+        bar.pack(fill="x", padx=24, pady=(12,8))
         url_row = tk.Frame(bar, bg=T["BG"]); url_row.pack(fill="x")
         tk.Label(url_row, text="PASTE URLS", bg=T["BG"], fg=T["MUTED"],
                  font=_f(8,"bold")).pack(anchor="w")
         url_inner = tk.Frame(bar, bg=T["BG"]); url_inner.pack(fill="x", pady=(6,0))
-        self.url_box = tk.Text(url_inner, height=3, font=_mono(10),
+        self.url_box = tk.Text(url_inner, height=2, font=_mono(10),
                                bg=T["INPUT"], fg=T["TEXT"], insertbackground=T["ACCENT"],
                                relief="flat", highlightthickness=1,
                                highlightbackground=T["BORDER"], highlightcolor=T["ACCENT"],
-                               padx=14, pady=12, selectbackground=T["MAROON"])
+                               padx=12, pady=9, selectbackground=T["MAROON"])
         self.url_box.pack(side="left", fill="x", expand=True)
         self.btn_dl = RoundedButton(url_inner, "↓  Download", self._start)
         self.btn_dl.pack(side="left", padx=(14,0))
@@ -1235,7 +1327,7 @@ class App:
 
         # Tabs
         self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="both", expand=True, padx=26, pady=(14,0))
+        self.nb.pack(fill="both", expand=True, padx=24, pady=(10,0))
         self._tab_downloads()
         self._tab_history()
         self._tab_stats()
@@ -1266,7 +1358,7 @@ class App:
     def _tab_downloads(self):
         tab = ttk.Frame(self.nb); self.nb.add(tab, text="   Downloads   ")
         # Row 1 — the two things every download needs: where it lands.
-        fld = tk.Frame(tab, bg=T["BG"]); fld.pack(fill="x", padx=6, pady=(18,12))
+        fld = tk.Frame(tab, bg=T["BG"]); fld.pack(fill="x", padx=6, pady=(12,8))
         self._lbl(fld, "Save to").pack(side="left", padx=(0,10))
         self.folder_var = tk.StringVar(value=self.cfg.get("dir",DEFAULT_DIR))
         self._entry(fld, self.folder_var).pack(side="left", fill="x", expand=True, padx=(0,8))
@@ -1283,11 +1375,11 @@ class App:
         self._adv_sum = tk.Label(adv_head, text="", bg=T["BG"], fg=T["MUTED"], font=_f(9))
         self._adv_sum.pack(side="left", padx=(10,0))
 
-        adv = tk.Frame(tab, bg=T["SURF"], highlightthickness=1,
-                       highlightbackground=T["BORDER"])
-        self._adv_frame = adv
+        adv_panel = RoundedPanel(tab, radius=12)
+        adv = adv_panel.inner
+        self._adv_frame = adv_panel
 
-        opt = tk.Frame(adv, bg=T["SURF"]); opt.pack(fill="x", padx=14, pady=(12,6))
+        opt = tk.Frame(adv, bg=T["SURF"]); opt.pack(fill="x", padx=14, pady=(10,4))
         tk.Label(opt, text="Format", bg=T["SURF"], fg=T["MUTED"],
                  font=_f(10,"bold")).grid(row=0,column=0,sticky="w",padx=(0,6))
         self.fmt_var = tk.StringVar()
@@ -1313,7 +1405,7 @@ class App:
                            ["none","chrome","safari","firefox","edge","brave"], width=110)
         cm.grid(row=0,column=5,sticky="w")
 
-        chk = tk.Frame(adv, bg=T["SURF"]); chk.pack(fill="x", padx=14, pady=(2,8))
+        chk = tk.Frame(adv, bg=T["SURF"]); chk.pack(fill="x", padx=14, pady=(2,6))
         self.sub_var   = tk.BooleanVar()
         self.thumb_var = tk.BooleanVar(value=True)
         self.pl_var    = tk.BooleanVar()
@@ -1322,7 +1414,7 @@ class App:
                     (self._premiere_on,"Premiere MP4")]:
             Switch(chk, l, v).pack(side="left", padx=(0,20))
 
-        sched = tk.Frame(adv, bg=T["SURF"]); sched.pack(fill="x", padx=14, pady=(0,14))
+        sched = tk.Frame(adv, bg=T["SURF"]); sched.pack(fill="x", padx=14, pady=(0,10))
         tk.Label(sched, text="Schedule", bg=T["SURF"], fg=T["MUTED"],
                  font=_f(10,"bold")).pack(side="left", padx=(0,6))
         self._sched_var = tk.StringVar(value="Now")
@@ -1339,7 +1431,7 @@ class App:
 
         # Row 3 — secondary actions only. The primary Download button now lives
         # next to the paste box, so nothing competes with it here.
-        act = tk.Frame(tab, bg=T["BG"]); act.pack(fill="x", padx=6, pady=(10,14))
+        act = tk.Frame(tab, bg=T["BG"]); act.pack(fill="x", padx=6, pady=(8,10))
         self._act_row = act
         self.btn_pause  = ttk.Button(act, text="❚❚ Pause",    style="Ghost.TButton", command=self._do_pause,  state="disabled")
         self.btn_cancel = ttk.Button(act, text="✕ Cancel",    style="Ghost.TButton", command=self._do_cancel, state="disabled")
@@ -1631,20 +1723,16 @@ class App:
         # Concurrent downloads
         self.concur_var = tk.IntVar(value=self.cfg.get("concurrent",3))
         self._add_setting(body, 2, "Concurrent downloads (1-5)",
-            lambda r: tk.Scale(r, from_=1, to=MAX_CONCURRENT, orient="horizontal",
-                               variable=self.concur_var, length=200,
-                               bg=T["BG"], fg=T["TEXT"], troughcolor=T["SURF2"],
-                               highlightthickness=0, activebackground=T["ACCENT"],
-                               command=lambda v: self._save_setting("concurrent", int(float(v)))))
+            lambda r: RoundedSlider(r, self.concur_var, from_=1, to=MAX_CONCURRENT,
+                                    step=1, width=170,
+                                    command=lambda v: self._save_setting("concurrent", int(v))))
 
         # Speed limit
         self.rate_var = tk.IntVar(value=self.cfg.get("rate_kbps",0))
         self._add_setting(body, 3, "Speed limit (KB/s — 0 = unlimited)",
-            lambda r: tk.Scale(r, from_=0, to=50000, resolution=100, orient="horizontal",
-                               variable=self.rate_var, length=300,
-                               bg=T["BG"], fg=T["TEXT"], troughcolor=T["SURF2"],
-                               highlightthickness=0, activebackground=T["ACCENT"],
-                               command=lambda v: self._save_setting("rate_kbps", int(float(v)))))
+            lambda r: RoundedSlider(r, self.rate_var, from_=0, to=50000, step=100,
+                                    width=250, suffix=" KB/s",
+                                    command=lambda v: self._save_setting("rate_kbps", int(v))))
 
         # Auto-categorize
         self.cat_var = tk.BooleanVar(value=self.cfg.get("categorize", False))
@@ -1702,9 +1790,9 @@ class App:
     def _add_setting(self, parent, row, label, widget_factory):
         """Place label in col 0, widget (built via factory) in col 1 of grid row."""
         tk.Label(parent, text=label, bg=T["BG"], fg=T["TEXT"], font=_f(10),
-                 anchor="w").grid(row=row, column=0, sticky="w", pady=10, padx=(0,16))
+                 anchor="w").grid(row=row, column=0, sticky="w", pady=5, padx=(0,16))
         cell = tk.Frame(parent, bg=T["BG"])
-        cell.grid(row=row, column=1, sticky="w", pady=10)
+        cell.grid(row=row, column=1, sticky="w", pady=5)
         widget = widget_factory(cell)
         widget.pack(side="left", anchor="w")
         if isinstance(widget, tk.OptionMenu):
@@ -1921,91 +2009,90 @@ class App:
             except Exception: pass
 
     def _build_card(self, item):
-        card = tk.Frame(self.q_frame, bg=T["SURF"], highlightthickness=1,
-                        highlightbackground=T["BORDER"])
-        card.pack(fill="x", pady=3, ipady=5, ipadx=10)
-        inner = tk.Frame(card, bg=T["SURF"]); inner.pack(fill="x")
+        """One compact rounded row per download.
 
-        # Left: status icon
+        The previous card was ~90 px tall (two stacked action buttons, a big
+        thumbnail, a full-height progress bar), so barely three downloads fit the
+        window. This one is a single identity line + a thin progress bar, with
+        all four actions in one row — a little over half the height.
+        """
+        panel = RoundedPanel(self.q_frame, radius=12)
+        panel.pack(fill="x", pady=3)
+        card = panel.inner
+        inner = tk.Frame(card, bg=T["SURF"]); inner.pack(fill="x", padx=10, pady=7)
+
         ico = tk.Label(inner, text="⏳", bg=T["SURF"], fg=T["MUTED"],
-                       font=_f(16), width=2)
-        ico.grid(row=0, column=0, rowspan=2, padx=(6,6), pady=4)
+                       font=_f(12), width=2)
+        ico.grid(row=0, column=0, rowspan=2, padx=(0,6))
 
-        # Thumbnail placeholder (PIL only)
         thumb = None
         if HAS_PIL:
-            thumb = tk.Label(inner, bg=T["SURF2"], width=8, height=3,
+            thumb = tk.Label(inner, bg=T["SURF2"], width=6, height=2,
                              text="", relief="flat")
-            thumb.grid(row=0, column=1, rowspan=2, padx=(0,10), pady=2)
-            # async fetch thumbnail
+            thumb.grid(row=0, column=1, rowspan=2, padx=(0,10))
             threading.Thread(target=self._fetch_thumb,
                              args=(item, thumb), daemon=True).start()
             mid_col = 2
         else:
             mid_col = 1
 
-        # Middle: badge + name + meta + progress
         mid = tk.Frame(inner, bg=T["SURF"])
-        mid.grid(row=0, column=mid_col, sticky="ew", pady=2)
+        mid.grid(row=0, column=mid_col, sticky="ew")
         inner.columnconfigure(mid_col, weight=1)
 
         cat = categorize(item.name)
         badge = tk.Label(mid, text=f" {item.badge} ", bg=T["MAROON"], fg=T["ACCENT"],
-                         font=_f(8,"bold"), padx=4, pady=1)
-        badge.pack(side="left", padx=(0,6))
+                         font=_f(7,"bold"), padx=4)
+        badge.pack(side="left", padx=(0,5))
         cat_badge = tk.Label(mid, text=f" {cat} ", bg=T["SURF2"], fg=T["MUTED"],
-                             font=_f(8), padx=4, pady=1)
+                             font=_f(7), padx=4)
         cat_badge.pack(side="left", padx=(0,8))
 
         short = item.name if len(item.name)<=70 else item.name[:67]+"..."
         name = tk.Label(mid, text=f"[{item.idx}/{item.total}] {short}",
-                        bg=T["SURF"], fg=T["TEXT"], font=_f(10,"bold"),
-                        anchor="w")
+                        bg=T["SURF"], fg=T["TEXT"], font=_f(10,"bold"), anchor="w")
         name.pack(side="left", fill="x", expand=True)
 
-        meta = tk.Label(inner, text="Waiting...", bg=T["SURF"], fg=T["MUTED"],
-                        font=_f(9), anchor="w")
-        meta.grid(row=1, column=mid_col, sticky="ew", pady=(2,4))
-
-        prog = ttk.Progressbar(inner, mode="determinate", maximum=100, length=220)
-        prog.grid(row=0, column=mid_col+1, rowspan=2, padx=(8,10), sticky="e")
+        # second line: status text on the left, thin progress on the right
+        line2 = tk.Frame(inner, bg=T["SURF"])
+        line2.grid(row=1, column=mid_col, sticky="ew", pady=(3,0))
+        meta = tk.Label(line2, text="Waiting...", bg=T["SURF"], fg=T["MUTED"],
+                        font=_f(8), anchor="w")
+        meta.pack(side="left")
+        prog = ttk.Progressbar(line2, mode="determinate", maximum=100, length=170)
+        prog.pack(side="right")
         prog["value"] = item.pct
 
-        # Right: per-item action menu — ⏸/▶ pauses/resumes THIS row only,
-        # ✕ cancels (first click) then removes (second click).
+        # Actions, all four on one line: pause/resume, remove, reveal the file,
+        # reopen the source page.
         act = tk.Frame(inner, bg=T["SURF"])
-        act.grid(row=0, column=mid_col+2, rowspan=2, padx=(0,6))
-        pbtn = ttk.Button(act, text="⏸", style="Ghost.TButton",
-                          command=lambda i=item: self._pause_item(i),
-                          width=2)
-        # Initial state mirrors the item (kept done-rows from the previous run
-        # were showing an enabled ⏸ until their first status update).
+        act.grid(row=0, column=mid_col+1, rowspan=2, padx=(10,0))
+        pbtn = ttk.Button(act, text="⏸", style="Row.TButton",
+                          command=lambda i=item: self._pause_item(i), width=2)
         if item.status == "paused": pbtn.configure(text="▶")
         elif item.status not in ("waiting", "downloading"): pbtn.configure(state="disabled")
-        pbtn.grid(row=0, column=0, padx=(0,2), pady=(0,2))
-        ttk.Button(act, text="✕", style="Ghost.TButton",
-                   command=lambda i=item: self._remove_item(i),
-                   width=2).grid(row=0, column=1, pady=(0,2))
-        # Second row: where the file went, and where it came from. The folder
-        # button stays disabled until the file actually exists on disk.
-        fbtn = ttk.Button(act, text="📂", style="Ghost.TButton",
+        pbtn.pack(side="left", padx=(0,3))
+        fbtn = ttk.Button(act, text="📂", style="Row.TButton",
                           command=lambda i=item: self._reveal_item(i), width=2)
-        fbtn.grid(row=1, column=0, padx=(0,2))
         if not (item.done_f and Path(item.done_f).exists()):
             fbtn.configure(state="disabled")
-        sbtn = ttk.Button(act, text="↗", style="Ghost.TButton",
+        fbtn.pack(side="left", padx=(0,3))
+        sbtn = ttk.Button(act, text="↗", style="Row.TButton",
                           command=lambda i=item: self._open_source(i), width=2)
-        sbtn.grid(row=1, column=1)
         if not str(item.url or "").startswith("http"):
             sbtn.configure(state="disabled")
+        sbtn.pack(side="left", padx=(0,3))
+        ttk.Button(act, text="✕", style="Row.TButton",
+                   command=lambda i=item: self._remove_item(i),
+                   width=2).pack(side="left")
         _tip(fbtn, "Show the file in " + ("Finder" if platform.system()=="Darwin" else "the folder"))
         _tip(sbtn, "Open the page this came from")
 
         self._row_widgets[item.id] = {
-            "card":card,"icon":ico,"name":name,"meta":meta,"prog":prog,"thumb":thumb,
+            "card":panel,"icon":ico,"name":name,"meta":meta,"prog":prog,"thumb":thumb,
             "pbtn":pbtn,"fbtn":fbtn,"sbtn":sbtn,
         }
-        item.row = card
+        item.row = panel
         item._lbl_icon = ico; item._lbl_name = name; item._lbl_meta = meta; item._prog = prog
         item._btn_pause = pbtn; item._btn_folder = fbtn; item._btn_src = sbtn
 
