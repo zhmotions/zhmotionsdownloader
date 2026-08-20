@@ -2,6 +2,13 @@
 # ZH Downloader browser-extension tests.  ./tests/run.sh
 # Needs only node, python3 and Chrome — no npm install, nothing vendored.
 #
+#   fb_retry_test.py    drives the real App._run_video with yt-dlp stubbed: a public
+#                       Facebook reel must retry WITHOUT cookies after "Cannot parse
+#                       data", a private one must still retry WITH them
+#   row_actions_test.py drives the 📂 / ↗ row buttons (reveal the finished file,
+#                       reopen the source page) and the Text-size font helpers
+#   widgets_test.py     builds the custom-drawn controls on a real (withdrawn) Tk
+#                       root — both bugs here were tkinter attribute shadowing
 #   bg.test.js          runs extension/background.js inside a node vm with a
 #                       stubbed chrome API (sniffed-stream persistence across a
 #                       service-worker restart, pending-queue TTL, hand-back of
@@ -22,6 +29,18 @@ CHROME=${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}
 
 echo "== app queue (_do_start row preservation) =="
 python3 "$here/queue_test.py"
+
+echo
+echo "== Facebook cookie retry (_run_video) =="
+python3 "$here/fb_retry_test.py"
+
+echo
+echo "== queue-row actions + font scaling =="
+python3 "$here/row_actions_test.py"
+
+echo
+echo "== custom controls (RoundedButton / RoundedSelect / Switch) =="
+python3 "$here/widgets_test.py"
 
 echo
 echo "== background.js (node vm + stubbed chrome API) =="

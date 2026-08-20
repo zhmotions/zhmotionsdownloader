@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.20"
+APP_VER     = "6.6.21"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -146,6 +146,16 @@ def license_verify(key):
 
 # -- Themes -----------------------------------------------------------------
 THEMES = {
+    # macOS — Apple's own system palette (Aqua blue accent, the exact greys the
+    # system UI uses). Default on Macs; the flat "Light" theme below is kept for
+    # anyone who prefers it and stays the default on Windows/Linux.
+    "macOS": {
+        "BG":"#f5f5f7","SURF":"#ffffff","SURF2":"#ececee","BORDER":"#d2d2d7",
+        "ACCENT":"#007aff","ACCENT2":"#0060df","MAROON":"#e8f0fe",
+        "TEXT":"#1d1d1f","MUTED":"#6e6e73",
+        "GREEN":"#34c759","YELLOW":"#ff9f0a","RED":"#ff3b30","BLUE":"#007aff","PURPLE":"#af52de",
+        "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#fbfbfd","LOG_FG":"#48484a",
+    },
     # Default light — clean modern flat UI
     "Light": {
         "BG":"#f5f6f8","SURF":"#ffffff","SURF2":"#eceef2","BORDER":"#d6d9e0",
@@ -193,6 +203,297 @@ THEMES = {
 
 # Active theme - mutated at runtime via set_theme()
 T = THEMES["Light"].copy()
+
+# ── UI font system ─────────────────────────────────────────────────────────
+# Every widget used to hardcode _f(8-15). On macOS that renders 2-3 pt
+# smaller than the system UI font, so the app looked cramped next to native apps.
+# _f() maps those same numbers onto the platform's real UI font and scales them by
+# the user's "Text size" setting (Settings tab, applies after restart).
+UI_SCALE   = 1.0            # overwritten from cfg during App.__init__
+_FAM_CACHE = {}
+
+def _pick_family(prefs, fallback):
+    """First installed family out of prefs. tkfont.families() needs a live root,
+    so this stays lazy — it is first called while the UI is being built."""
+    key = tuple(prefs)
+    if key in _FAM_CACHE: return _FAM_CACHE[key]
+    fams = set()
+    try:
+        import tkinter.font as _tkfont
+        fams = {f.lower() for f in _tkfont.families()}
+    except Exception:
+        pass
+    fam = next((p for p in prefs if p.lower() in fams), fallback)
+    if fams: _FAM_CACHE[key] = fam      # don't cache a no-root miss
+    return fam
+
+def UI_FAMILY():
+    sysname = platform.system()
+    if sysname == "Darwin":
+        return _pick_family([".AppleSystemUIFont", "SF Pro Text", "SF Pro Display",
+                             "Helvetica Neue"], "Helvetica")
+    if sysname == "Windows":
+        return _pick_family(["Segoe UI Variable Text", "Segoe UI"], "Segoe UI")
+    return _pick_family(["Inter", "Cantarell", "Ubuntu", "DejaVu Sans"], "Helvetica")
+
+def MONO_FAMILY():
+    sysname = platform.system()
+    if sysname == "Darwin":
+        return _pick_family(["SF Mono", "Menlo"], "Menlo")
+    if sysname == "Windows":
+        return _pick_family(["Cascadia Mono", "Consolas"], "Consolas")
+    return _pick_family(["JetBrains Mono", "DejaVu Sans Mono"], "Courier")
+
+def _f(size, *style):
+    """UI font at the system baseline: the old numbers + 2 pt, then user scale."""
+    return (UI_FAMILY(), max(8, int(round((size + 2) * UI_SCALE))), *style)
+
+def _mono(size, *style):
+    return (MONO_FAMILY(), max(8, int(round((size + 1) * UI_SCALE))), *style)
+
+TEXT_SIZES = {"Small": 0.9, "Default": 1.0, "Large": 1.15, "Extra large": 1.3}
+
+def _def_theme_name():
+    return "macOS" if platform.system() == "Darwin" else "Light"
+
+def _error_hint(msg, url=""):
+    """Turn yt-dlp's raw failure into the one line that tells the user what to do.
+    Measured against real failures from the log: Vimeo wants a logged-in session,
+    Suno/Discord/Dropbox/Frame.io have no extractor at all, blob: URLs never work."""
+    m = (msg or "").lower()
+    u = (url or "").lower()
+    if u.startswith("blob:"):
+        return ("blob: links only exist inside the browser tab — use the site's own "
+                "download button, or the ZH extension on the page.")
+    if "only works when logged-in" in m or "login required" in m or "sign in to confirm" in m:
+        site = u.split("/")[2] if u.startswith("http") and len(u.split("/")) > 2 else "this site"
+        return (f"Set Cookies to your browser (Advanced options) and stay logged in to "
+                f"{site} in it, then try again.")
+    if "unsupported url" in m or "not supported and will not be supported" in m:
+        return ("No extractor for this site. Open the page, play the video, then use the "
+                "ZH browser extension's Download button instead.")
+    if "private" in m and "video" in m:
+        return "The video is private — cookies from an account that can see it are needed."
+    if "http error 403" in m:
+        return "403 from the site — try Cookies → your browser, or a different Format."
+    return ""
+
+
+def _reveal_path(path):
+    """Show a file in Finder / Explorer / the Linux file manager, falling back to
+    its folder when the file is gone."""
+    p = Path(path); d = str(p.parent)
+    try:
+        if platform.system() == "Darwin":
+            subprocess.run(["open", "-R", str(p)] if p.exists() else ["open", d])
+        elif platform.system() == "Windows":
+            # "/select," and the path have to be ONE argument — passed apart,
+            # Explorer ignores them and just opens Documents.
+            if p.exists(): subprocess.run(["explorer", "/select,%s" % p])
+            else:          os.startfile(d)
+        else:
+            subprocess.run(["xdg-open", d])
+    except Exception:
+        pass
+
+def _tip(widget, text):
+    """Hover tooltip. The queue-row actions are icon-only, so they need one."""
+    box = {"w": None}
+    def hide(_=None):
+        w, box["w"] = box.get("w"), None
+        try:
+            if w: w.destroy()
+        except Exception: pass
+    def show(_=None):
+        if box.get("w") or not text: return
+        try:
+            x = widget.winfo_rootx() + widget.winfo_width() // 2
+            y = widget.winfo_rooty() + widget.winfo_height() + 4
+            w = tk.Toplevel(widget); w.wm_overrideredirect(True)
+            tk.Label(w, text=text, bg=T["SURF2"], fg=T["TEXT"], font=_f(8),
+                     padx=7, pady=3, relief="solid", borderwidth=1).pack()
+            w.update_idletasks()
+            w.wm_geometry("+%d+%d" % (max(0, x - w.winfo_width() // 2), y))
+            box["w"] = w
+        except Exception: pass
+    widget.bind("<Enter>", show, add="+")
+    widget.bind("<Leave>", hide, add="+")
+    widget.bind("<ButtonPress>", hide, add="+")
+    widget.bind("<Destroy>", hide, add="+")
+
+
+class RoundedButton(tk.Canvas):
+    """Primary action button. Tk ships no rounded widget, so this draws one:
+    a rounded rect + centred label, with hover / pressed / disabled fills.
+    Supports the same calls the old ttk button got — configure(text=…, state=…)."""
+
+    def __init__(self, parent, text, command, fill=None, fg="#ffffff",
+                 pad=(24, 13), radius=11, font=None, **kw):
+        import tkinter.font as _tkfont
+        self._text, self._cmd = text, command
+        self._fill = fill or T["ACCENT"]
+        self._fg, self._radius = fg, radius
+        self._font = font or _f(11, "bold")
+        self._state, self._hover = "normal", False
+        f = _tkfont.Font(font=self._font)
+        w = f.measure(text) + pad[0] * 2
+        h = f.metrics("linespace") + pad[1] * 2
+        # NB: not self._w/_h — tkinter's Misc already uses self._w for the
+        # widget pathname, and shadowing it breaks every later Tk call.
+        self._bw, self._bh = w, h
+        super().__init__(parent, width=w, height=h, highlightthickness=0,
+                         bd=0, bg=parent.cget("bg"), cursor="hand2", **kw)
+        self.bind("<Button-1>",        self._press)
+        self.bind("<ButtonRelease-1>", self._release)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self._draw()
+
+    # -- painting
+    def _rrect(self, x1, y1, x2, y2, r, **kw):
+        pts = [x1+r, y1, x2-r, y1, x2, y1, x2, y1+r, x2, y2-r, x2, y2, x2-r, y2,
+               x1+r, y2, x1, y2, x1, y2-r, x1, y1+r, x1, y1]
+        return self.create_polygon(pts, smooth=True, **kw)
+
+    def _draw(self, pressed=False):
+        self.delete("all")
+        if self._state == "disabled": fill, fg = T["SURF2"], T["MUTED"]
+        elif pressed:                 fill, fg = T["ACCENT2"], self._fg
+        elif self._hover:             fill, fg = T["ACCENT2"], self._fg
+        else:                         fill, fg = self._fill, self._fg
+        self._rrect(1, 1, self._bw - 1, self._bh - 1, self._radius, fill=fill, outline=fill)
+        self.create_text(self._bw / 2, self._bh / 2, text=self._text, fill=fg,
+                         font=self._font)
+
+    # -- events
+    def _set_hover(self, on):
+        self._hover = on and self._state != "disabled"
+        self._draw()
+
+    def _press(self, _=None):
+        if self._state != "disabled": self._draw(pressed=True)
+
+    def _release(self, _=None):
+        if self._state == "disabled": return
+        self._draw()
+        if self._cmd: self._cmd()
+
+    # -- ttk-compatible surface
+    def configure(self, **kw):
+        redraw = False
+        if "text" in kw:
+            self._text = kw.pop("text"); redraw = True
+        if "state" in kw:
+            self._state = kw.pop("state"); self._hover = False; redraw = True
+            self.configure_cursor()
+        if kw: super().configure(**kw)
+        if redraw: self._draw()
+    config = configure
+
+    def configure_cursor(self):
+        try: super().configure(cursor="arrow" if self._state == "disabled" else "hand2")
+        except Exception: pass
+
+    def cget(self, key):
+        if key == "text":  return self._text
+        if key == "state": return self._state
+        return super().cget(key)
+
+
+class RoundedSelect(tk.Canvas):
+    """Dropdown drawn as a rounded pill instead of the OS combo box. Backed by
+    the same StringVar the old tk.OptionMenu used, so callers don't change."""
+
+    def __init__(self, parent, variable, options, width=180, command=None, **kw):
+        import tkinter.font as _tkfont
+        # NB: _choices, not _options — tkinter.Misc._options() is a method and
+        # shadowing it breaks widget creation ('list' object is not callable)
+        self._var, self._choices, self._cmd = variable, list(options), command
+        self._font = _f(10)
+        self._hover = False
+        f = _tkfont.Font(font=self._font)
+        h = f.metrics("linespace") + 16
+        self._bw, self._bh = width, h
+        super().__init__(parent, width=width, height=h, highlightthickness=0, bd=0,
+                         bg=parent.cget("bg"), cursor="hand2", **kw)
+        self._menu = tk.Menu(self, tearoff=0, bg=T["SURF"], fg=T["TEXT"],
+                             activebackground=T["ACCENT"], activeforeground="#ffffff",
+                             font=self._font, bd=0)
+        for o in self._choices:
+            self._menu.add_command(label=o, command=lambda v=o: self._choose(v))
+        self.bind("<Button-1>", self._popup)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        try: variable.trace_add("write", lambda *a: self._draw())
+        except Exception: pass
+        self._draw()
+
+    def _set_hover(self, on): self._hover = on; self._draw()
+
+    def _choose(self, v):
+        self._var.set(v); self._draw()
+        if self._cmd: self._cmd(v)
+
+    def _popup(self, e):
+        try: self._menu.tk_popup(self.winfo_rootx(), self.winfo_rooty() + self._bh)
+        finally: self._menu.grab_release()
+
+    def _draw(self):
+        self.delete("all")
+        r, w, h = 8, self._bw, self._bh
+        pts = [r,1, w-r,1, w,1, w,r, w,h-r, w,h, w-r,h, r,h, 1,h, 1,h-r, 1,r, 1,1]
+        self.create_polygon(pts, smooth=True, fill=T["SURF2"],
+                            outline=T["ACCENT"] if self._hover else T["BORDER"])
+        txt = str(self._var.get())
+        self.create_text(12, h/2, text=txt, fill=T["TEXT"], font=self._font, anchor="w")
+        self.create_text(w-12, h/2, text="⌄", fill=T["MUTED"], font=_f(10, "bold"),
+                         anchor="e")
+
+
+class Switch(tk.Canvas):
+    """iOS-style pill toggle for BooleanVars — the Tk checkbox indicator can't be
+    restyled, and its ☒ mark looked like a 1998 dialog."""
+
+    def __init__(self, parent, text, variable, command=None, **kw):
+        import tkinter.font as _tkfont
+        self._var, self._text, self._cmd = variable, text, command
+        self._font = _f(10)
+        f = _tkfont.Font(font=self._font)
+        self._pw, self._ph = 38, 21
+        w = self._pw + (10 + f.measure(text) if text else 0) + 4
+        h = max(self._ph, f.metrics("linespace")) + 6
+        self._bw, self._bh = w, h
+        super().__init__(parent, width=w, height=h, highlightthickness=0, bd=0,
+                         bg=parent.cget("bg"), cursor="hand2", **kw)
+        self.bind("<Button-1>", self._toggle)
+        try: variable.trace_add("write", lambda *a: self._draw())
+        except Exception: pass
+        self._draw()
+
+    def _toggle(self, _=None):
+        self._var.set(not bool(self._var.get())); self._draw()
+        if self._cmd: self._cmd()
+
+    def _draw(self):
+        self.delete("all")
+        on = bool(self._var.get())
+        y0 = (self._bh - self._ph) / 2; y1 = y0 + self._ph
+        r = self._ph / 2
+        fill = T["ACCENT"] if on else T["SURF2"]
+        self.create_oval(0, y0, self._ph, y1, fill=fill, outline=fill)
+        self.create_oval(self._pw - self._ph, y0, self._pw, y1, fill=fill, outline=fill)
+        self.create_rectangle(r, y0, self._pw - r, y1, fill=fill, outline=fill)
+        if not on:
+            self.create_line(r, y0, self._pw - r, y0, fill=T["BORDER"])
+            self.create_line(r, y1, self._pw - r, y1, fill=T["BORDER"])
+        kx = (self._pw - r - 1) if on else (r + 1)
+        self.create_oval(kx - r + 2.5, y0 + 2.5, kx + r - 2.5, y1 - 2.5,
+                         fill="#ffffff", outline="#e6e6e6")
+        if self._text:
+            self.create_text(self._pw + 10, self._bh / 2, text=self._text,
+                             fill=T["TEXT"], font=self._font, anchor="w")
+
+
 
 # -- File categories --------------------------------------------------------
 CATEGORIES = {
@@ -706,12 +1007,18 @@ class App:
 
         self.cfg       = jload(CFG_PATH, {
             "dir":DEFAULT_DIR, "fmt":"4k", "cookies":default_cookies, "clip":True,
-            "theme":"Light", "concurrent":3, "rate_kbps":0, "categorize":False,
+            "theme":"macOS" if platform.system()=="Darwin" else "Light",
+            "concurrent":3, "rate_kbps":0, "categorize":False,
             "completion_sound":True, "shutdown_after":False, "conflict":"rename",
-            "autostart":True,
+            "autostart":True, "text_size":"Default",
         })
+        # Text size first: every widget built below asks _f()/_mono() for its font,
+        # so the scale has to be in place before any of them exist.
+        global UI_SCALE
+        UI_SCALE = TEXT_SIZES.get(self.cfg.get("text_size","Default"), 1.0)
         # Apply theme
-        self.set_theme(self.cfg.get("theme","Light"), refresh=False)
+        _def_theme = "macOS" if platform.system()=="Darwin" else "Light"
+        self.set_theme(self.cfg.get("theme", _def_theme), refresh=False)
         self.state     = jload(STATE_PATH,{"queue":[]})
         self.history   = HistoryStore()
         self.stats     = StatsStore()
@@ -745,15 +1052,19 @@ class App:
             _sc = float(root.tk.call("tk", "scaling"))
             root.tk.call("tk", "scaling", _sc * 1.25)
         except Exception: pass
-        root.geometry("1200x860")
-        root.minsize(940,660)
+        # Window grows with the text-size setting — at "Extra large" the action
+        # row (Download … Clear Queue) no longer fits 1100 px and buttons fell off.
+        root.geometry("%dx%d" % (int(1200 * UI_SCALE), int(860 * UI_SCALE)))
+        root.minsize(int(940 * UI_SCALE), int(660 * UI_SCALE))
         root.configure(bg=T["BG"])
         # Center on screen
         root.update_idletasks()
         try:
             sw = root.winfo_screenwidth(); sh = root.winfo_screenheight()
-            x = max(0, (sw - 1100) // 2); y = max(0, (sh - 800) // 2)
-            root.geometry(f"1100x800+{x}+{y}")
+            _w, _h = int(1100 * UI_SCALE), int(800 * UI_SCALE)
+            _w, _h = min(_w, sw - 40), min(_h, sh - 80)
+            x = max(0, (sw - _w) // 2); y = max(0, (sh - _h) // 2)
+            root.geometry(f"{_w}x{_h}+{x}+{y}")
         except: pass
 
         self._ui()
@@ -806,39 +1117,51 @@ class App:
         except: pass
         s.configure("TFrame",       background=T["BG"])
         s.configure("Card.TFrame",  background=T["SURF"])
-        s.configure("TLabel",       background=T["BG"], foreground=T["TEXT"], font=("Helvetica",10))
-        s.configure("Muted.TLabel", background=T["BG"], foreground=T["MUTED"], font=("Helvetica",9))
-        s.configure("Title.TLabel", background=T["BG"], foreground=T["ACCENT"], font=("Helvetica",13,"bold"))
-        s.configure("TCheckbutton", background=T["BG"], foreground=T["MUTED"], font=("Helvetica",10))
+        s.configure("TLabel",       background=T["BG"], foreground=T["TEXT"], font=_f(10))
+        s.configure("Muted.TLabel", background=T["BG"], foreground=T["MUTED"], font=_f(9))
+        s.configure("Title.TLabel", background=T["BG"], foreground=T["ACCENT"], font=_f(13,"bold"))
+        s.configure("TCheckbutton", background=T["BG"], foreground=T["MUTED"], font=_f(10))
         s.map("TCheckbutton", background=[("active",T["BG"])])
+        # same control, but on the Advanced-options card
+        s.configure("Card.TCheckbutton", background=T["SURF"], foreground=T["MUTED"],
+                    font=_f(10))
+        s.map("Card.TCheckbutton", background=[("active",T["SURF"])])
         # Auto-pick button text color based on theme luminance
         btn_fg = "#ffffff" if T["BG"].startswith("#") and sum(int(T["BG"][i:i+2],16) for i in (1,3,5)) < 384 else "#ffffff"
         # Main button always white text on accent
         s.configure("Main.TButton", background=T["ACCENT"], foreground="#ffffff",
-                    font=("Helvetica",11,"bold"), padding=(18,9), borderwidth=0,
+                    font=_f(11,"bold"), padding=(18,9), borderwidth=0,
                     relief="flat", anchor="center")
         s.map("Main.TButton",
               background=[("active",T["ACCENT2"]),("pressed",T["ACCENT2"]),("disabled",T["SURF2"])],
               foreground=[("active","#ffffff"),("disabled",T["MUTED"])])
         s.configure("Ghost.TButton", background=T["SURF2"], foreground=T["TEXT"],
-                    font=("Helvetica",10), padding=(10,7), borderwidth=1, relief="flat")
+                    font=_f(10), padding=(10,6), borderwidth=1, relief="flat",
+                    bordercolor=T["BORDER"], lightcolor=T["SURF2"], darkcolor=T["SURF2"])
         s.map("Ghost.TButton",
               background=[("active",T["SURF"]),("disabled",T["BG"])],
               foreground=[("active",T["TEXT"]),("disabled",T["MUTED"])])
         s.configure("Danger.TButton", background=T["RED"], foreground="#ffffff",
-                    font=("Helvetica",10,"bold"), padding=(10,7), borderwidth=0, relief="flat")
+                    font=_f(10,"bold"), padding=(10,7), borderwidth=0, relief="flat")
         s.configure("TProgressbar", troughcolor=T["SURF2"], background=T["ACCENT"],
-                    borderwidth=0, thickness=6)
-        s.configure("TNotebook", background=T["BG"], borderwidth=0)
-        s.configure("TNotebook.Tab", background=T["SURF"], foreground=T["MUTED"],
-                    font=("Helvetica",10,"bold"), padding=(18,9), borderwidth=0)
+                    borderwidth=0, thickness=6,
+                    # clam paints a 3-D bevel unless every edge colour matches
+                    lightcolor=T["ACCENT"], darkcolor=T["ACCENT"], bordercolor=T["SURF2"])
+        # Flat text tabs: no raised chrome, the selected one is just the card
+        # colour + accent text (the old bevelled look read as a 2005 Windows app)
+        s.configure("TNotebook", background=T["BG"], borderwidth=0,
+                    tabmargins=(0, 6, 0, 0))
+        s.configure("TNotebook.Tab", background=T["BG"], foreground=T["MUTED"],
+                    font=_f(10,"bold"), padding=(22,11), borderwidth=0,
+                    lightcolor=T["BG"], darkcolor=T["BG"], bordercolor=T["BG"])
         s.map("TNotebook.Tab",
-              background=[("selected",T["BG"]),("active",T["SURF2"])],
-              foreground=[("selected",T["ACCENT"]),("active",T["TEXT"])])
+              background=[("selected",T["SURF"]),("active",T["BG"])],
+              foreground=[("selected",T["ACCENT"]),("active",T["TEXT"])],
+              lightcolor=[("selected",T["SURF"])], darkcolor=[("selected",T["SURF"])])
         s.configure("Treeview", background=T["SURF"], foreground=T["TEXT"],
-                    fieldbackground=T["SURF"], borderwidth=0, font=("Helvetica",10))
+                    fieldbackground=T["SURF"], borderwidth=0, font=_f(10))
         s.configure("Treeview.Heading", background=T["SURF2"], foreground=T["MUTED"],
-                    font=("Helvetica",9,"bold"), borderwidth=0)
+                    font=_f(9,"bold"), borderwidth=0)
         s.map("Treeview", background=[("selected",T["MAROON"])], foreground=[("selected",T["TEXT"])])
         s.configure("TScale", background=T["BG"], troughcolor=T["SURF2"])
 
@@ -859,47 +1182,46 @@ class App:
                 self._logo = tk.PhotoImage(file=lp)
                 tk.Label(hi, image=self._logo, bg=T["HEADER"], bd=0).pack(side="left", padx=(0,10))
             except: pass
-        tx = tk.Frame(hi, bg=T["HEADER"]); tx.pack(side="left")
-        tk.Label(tx, text=APP_NAME, bg=T["HEADER"], fg=T["ACCENT"],
-                 font=("Helvetica",15,"bold")).pack(anchor="w")
-        tk.Label(tx, text=f"v{APP_VER}  ·  by ZH Motions",
-                 bg=T["HEADER"], fg=T["MUTED"], font=("Helvetica",9)).pack(anchor="w")
+        # Icon only — the wordmark + "v… · by ZH Motions" line carried no
+        # information (the title bar already says both) and crowded the header.
         # Right side info pills
         right = tk.Frame(hi, bg=T["HEADER"]); right.pack(side="right")
         self._pro_btn = tk.Button(right, text=("⭐ Pro ✓" if self.is_pro() else "⭐ Upgrade"),
                                   command=self._open_pro, bd=0, relief="flat", cursor="hand2",
                                   bg=T["HEADER"], fg=T["ACCENT"], activebackground=T["HEADER"],
-                                  font=("Helvetica", 10, "bold"))
+                                  font=_f(10, "bold"))
         self._pro_btn.pack(side="right", padx=(0,12))
-        self._dot = tk.Label(right, text="● Bridge", bg=T["HEADER"], fg=T["MUTED"], font=("Helvetica",9))
+        self._dot = tk.Label(right, text="● Bridge", bg=T["HEADER"], fg=T["MUTED"], font=_f(9))
         self._dot.pack(side="right", padx=(0,10))
-        self._concur_lbl = tk.Label(right, text="0/0 active", bg=T["HEADER"], fg=T["MUTED"], font=("Helvetica",9))
+        self._concur_lbl = tk.Label(right, text="0/0 active", bg=T["HEADER"], fg=T["MUTED"], font=_f(9))
         self._concur_lbl.pack(side="right", padx=(0,14))
         # About + Help links in header
         about = tk.Label(right, text="ⓘ About", bg=T["HEADER"], fg=T["ACCENT"],
-                         font=("Helvetica",9,"underline"), cursor="hand2")
+                         font=_f(9,"underline"), cursor="hand2")
         about.pack(side="right", padx=(0,10))
         about.bind("<Button-1>", lambda e: self._show_about())
 
         help_lbl = tk.Label(right, text="? Help", bg=T["HEADER"], fg=T["ACCENT"],
-                            font=("Helvetica",9,"underline"), cursor="hand2")
+                            font=_f(9,"underline"), cursor="hand2")
         help_lbl.pack(side="right", padx=(0,10))
         help_lbl.bind("<Button-1>", lambda e: self._show_help())
 
-        # Top toolbar (URL + add + drop-zone + global actions)
+        # Paste box + the one primary button, side by side: paste a link, click
+        # Download. Everything else moved below into the tabs / Advanced options.
         bar = tk.Frame(self.root, bg=T["BG"])
-        bar.pack(fill="x", padx=20, pady=(14,8))
-        # URL row
+        bar.pack(fill="x", padx=26, pady=(18,10))
         url_row = tk.Frame(bar, bg=T["BG"]); url_row.pack(fill="x")
-        tk.Label(url_row, text="Paste URLs:", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",10,"bold")).pack(anchor="w")
-        url_inner = tk.Frame(bar, bg=T["BG"]); url_inner.pack(fill="x", pady=(4,0))
-        self.url_box = tk.Text(url_inner, height=3, font=("Menlo",10),
+        tk.Label(url_row, text="PASTE URLS", bg=T["BG"], fg=T["MUTED"],
+                 font=_f(8,"bold")).pack(anchor="w")
+        url_inner = tk.Frame(bar, bg=T["BG"]); url_inner.pack(fill="x", pady=(6,0))
+        self.url_box = tk.Text(url_inner, height=3, font=_mono(10),
                                bg=T["INPUT"], fg=T["TEXT"], insertbackground=T["ACCENT"],
                                relief="flat", highlightthickness=1,
                                highlightbackground=T["BORDER"], highlightcolor=T["ACCENT"],
-                               padx=12, pady=10, selectbackground=T["MAROON"])
+                               padx=14, pady=12, selectbackground=T["MAROON"])
         self.url_box.pack(side="left", fill="x", expand=True)
+        self.btn_dl = RoundedButton(url_inner, "↓  Download", self._start)
+        self.btn_dl.pack(side="left", padx=(14,0))
         self.url_box.bind("<Command-v>", lambda e: self.root.after(100, self._on_paste))
         self.url_box.bind("<Control-v>", lambda e: self.root.after(100, self._on_paste))
 
@@ -913,7 +1235,7 @@ class App:
 
         # Tabs
         self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="both", expand=True, padx=20, pady=(10,0))
+        self.nb.pack(fill="both", expand=True, padx=26, pady=(14,0))
         self._tab_downloads()
         self._tab_history()
         self._tab_stats()
@@ -930,11 +1252,11 @@ class App:
         left = tk.Frame(bottom, bg=T["SURF"]); left.pack(side="left", padx=14, pady=6)
         self.status_var = tk.StringVar(value="Idle — paste URLs and press Download")
         tk.Label(left, textvariable=self.status_var, bg=T["SURF"], fg=T["MUTED"],
-                 font=("Helvetica",9)).pack(side="left")
+                 font=_f(9)).pack(side="left")
         right = tk.Frame(bottom, bg=T["SURF"]); right.pack(side="right", padx=14, pady=6)
         self.spd_var = tk.StringVar(value="")
         tk.Label(right, textvariable=self.spd_var, bg=T["SURF"], fg=T["ACCENT"],
-                 font=("Helvetica",10,"bold")).pack(side="right")
+                 font=_f(10,"bold")).pack(side="right")
         # Mini graph
         self.graph = tk.Canvas(right, bg=T["SURF2"], width=120, height=20,
                                highlightthickness=0)
@@ -942,92 +1264,112 @@ class App:
 
     # -- Tab: Downloads -----------------------------------------------------
     def _tab_downloads(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text=f"  ⬇  Downloads  ")
-        # Options row
-        opt = tk.Frame(tab, bg=T["BG"]); opt.pack(fill="x", padx=4, pady=(12,8))
-        self._lbl(opt, "Format").grid(row=0,column=0,sticky="w",padx=(0,4))
+        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   Downloads   ")
+        # Row 1 — the two things every download needs: where it lands.
+        fld = tk.Frame(tab, bg=T["BG"]); fld.pack(fill="x", padx=6, pady=(18,12))
+        self._lbl(fld, "Save to").pack(side="left", padx=(0,10))
+        self.folder_var = tk.StringVar(value=self.cfg.get("dir",DEFAULT_DIR))
+        self._entry(fld, self.folder_var).pack(side="left", fill="x", expand=True, padx=(0,8))
+        self._ghost_btn(fld, "Browse", self._pick_folder).pack(side="left", padx=(0,6))
+        self._ghost_btn(fld, "Open",   self._open_folder).pack(side="left")
+
+        # Row 2 — Advanced options. Format / Mode / Cookies / toggles / Schedule
+        # are set once and then never touched, so they start folded away.
+        adv_head = tk.Frame(tab, bg=T["BG"]); adv_head.pack(fill="x", padx=6, pady=(0,4))
+        self._adv_lbl = tk.Label(adv_head, text="", bg=T["BG"], fg=T["ACCENT"],
+                                 font=_f(9,"bold"), cursor="hand2")
+        self._adv_lbl.pack(side="left")
+        self._adv_lbl.bind("<Button-1>", lambda e: self._toggle_adv())
+        self._adv_sum = tk.Label(adv_head, text="", bg=T["BG"], fg=T["MUTED"], font=_f(9))
+        self._adv_sum.pack(side="left", padx=(10,0))
+
+        adv = tk.Frame(tab, bg=T["SURF"], highlightthickness=1,
+                       highlightbackground=T["BORDER"])
+        self._adv_frame = adv
+
+        opt = tk.Frame(adv, bg=T["SURF"]); opt.pack(fill="x", padx=14, pady=(12,6))
+        tk.Label(opt, text="Format", bg=T["SURF"], fg=T["MUTED"],
+                 font=_f(10,"bold")).grid(row=0,column=0,sticky="w",padx=(0,6))
         self.fmt_var = tk.StringVar()
         fk = self.cfg.get("fmt","4k")
         if fk not in FMTS: fk = "4k"
         self.fmt_var.set(f"{fk}: {FMTS[fk]['label']}")
-        fm = tk.OptionMenu(opt, self.fmt_var, *[f"{k}: {v['label']}" for k,v in FMTS.items()])
-        self._style_menu(fm); fm.configure(width=22)
-        fm.grid(row=0,column=1,sticky="w",padx=(0,12))
+        fm = RoundedSelect(opt, self.fmt_var,
+                           [f"{k}: {v['label']}" for k,v in FMTS.items()], width=210)
+        fm.grid(row=0,column=1,sticky="w",padx=(0,16))
 
-        self._lbl(opt, "Mode").grid(row=0,column=2,sticky="w",padx=(0,4))
+        tk.Label(opt, text="Mode", bg=T["SURF"], fg=T["MUTED"],
+                 font=_f(10,"bold")).grid(row=0,column=2,sticky="w",padx=(0,6))
         self.mode_var = tk.StringVar(value="auto: Auto-detect")
-        mm = tk.OptionMenu(opt, self.mode_var,
-                           "auto: Auto-detect","video: Video/Audio","file: General File")
-        self._style_menu(mm); mm.configure(width=14)
-        mm.grid(row=0,column=3,sticky="w",padx=(0,12))
+        mm = RoundedSelect(opt, self.mode_var,
+                           ["auto: Auto-detect","video: Video/Audio","file: General File"],
+                           width=160)
+        mm.grid(row=0,column=3,sticky="w",padx=(0,16))
 
-        self._lbl(opt, "Cookies").grid(row=0,column=4,sticky="w",padx=(0,4))
+        tk.Label(opt, text="Cookies", bg=T["SURF"], fg=T["MUTED"],
+                 font=_f(10,"bold")).grid(row=0,column=4,sticky="w",padx=(0,6))
         self.ck_var = tk.StringVar(value=self.cfg.get("cookies","none"))
-        cm = tk.OptionMenu(opt, self.ck_var,"none","chrome","safari","firefox","edge","brave")
-        self._style_menu(cm); cm.configure(width=9)
+        cm = RoundedSelect(opt, self.ck_var,
+                           ["none","chrome","safari","firefox","edge","brave"], width=110)
         cm.grid(row=0,column=5,sticky="w")
 
-        # Toggles row
-        chk = tk.Frame(tab, bg=T["BG"]); chk.pack(fill="x", padx=4, pady=(0,8))
+        chk = tk.Frame(adv, bg=T["SURF"]); chk.pack(fill="x", padx=14, pady=(2,8))
         self.sub_var   = tk.BooleanVar()
         self.thumb_var = tk.BooleanVar(value=True)
         self.pl_var    = tk.BooleanVar()
         for v,l in [(self.sub_var,"Subtitles"),(self.thumb_var,"Thumbnail"),
                     (self.pl_var,"Full Playlist"),(self._clip_on,"Watch clipboard"),
                     (self._premiere_on,"Premiere MP4")]:
-            ttk.Checkbutton(chk, text=l, variable=v).pack(side="left", padx=(0,16))
+            Switch(chk, l, v).pack(side="left", padx=(0,20))
 
-        # Folder + scheduler row
-        fld = tk.Frame(tab, bg=T["BG"]); fld.pack(fill="x", padx=4, pady=(0,8))
-        self._lbl(fld, "Save to").pack(side="left", padx=(0,4))
-        self.folder_var = tk.StringVar(value=self.cfg.get("dir",DEFAULT_DIR))
-        self._entry(fld, self.folder_var).pack(side="left", fill="x", expand=True, padx=(0,6))
-        self._ghost_btn(fld, "Browse", self._pick_folder).pack(side="left", padx=(0,4))
-        self._ghost_btn(fld, "Open",   self._open_folder).pack(side="left")
-
-        # Scheduler
-        sched = tk.Frame(tab, bg=T["BG"]); sched.pack(fill="x", padx=4, pady=(0,8))
-        self._lbl(sched, "Schedule").pack(side="left", padx=(0,4))
+        sched = tk.Frame(adv, bg=T["SURF"]); sched.pack(fill="x", padx=14, pady=(0,14))
+        tk.Label(sched, text="Schedule", bg=T["SURF"], fg=T["MUTED"],
+                 font=_f(10,"bold")).pack(side="left", padx=(0,6))
         self._sched_var = tk.StringVar(value="Now")
-        sm = tk.OptionMenu(sched, self._sched_var,
-                           "Now","In 30 minutes","In 1 hour","In 2 hours",
-                           "In 6 hours","In 12 hours","Tonight 11 PM",
-                           "Tomorrow 6 AM","Tomorrow 9 AM")
-        self._style_menu(sm); sm.configure(width=16); sm.pack(side="left")
-        self._sched_lbl = tk.Label(sched, text="", bg=T["BG"], fg=T["ACCENT"],
-                                   font=("Helvetica",10,"bold"))
-        self._sched_lbl.pack(side="left", padx=(12,0))
+        sm = RoundedSelect(sched, self._sched_var,
+                           ["Now","In 30 minutes","In 1 hour","In 2 hours",
+                            "In 6 hours","In 12 hours","Tonight 11 PM",
+                            "Tomorrow 6 AM","Tomorrow 9 AM"], width=180)
+        sm.pack(side="left")
+        self._sched_lbl = tk.Label(sched, text="", bg=T["SURF"], fg=T["ACCENT"],
+                                   font=_f(10,"bold"))
+        self._sched_lbl.pack(side="left", padx=(14,0))
+        for _v in (self.fmt_var, self.ck_var, self._sched_var):
+            _v.trace_add("write", lambda *a: self._adv_summary())
 
-        # Action buttons row
-        btns = tk.Frame(tab, bg=T["BG"]); btns.pack(fill="x", padx=4, pady=(4,10))
-        self.btn_dl     = ttk.Button(btns, text="↓ Download",  style="Main.TButton", command=self._start)
-        self.btn_pause  = ttk.Button(btns, text="❚❚ Pause",    style="Ghost.TButton", command=self._do_pause,  state="disabled")
-        self.btn_cancel = ttk.Button(btns, text="✕ Cancel",    style="Ghost.TButton", command=self._do_cancel, state="disabled")
-        self.btn_dl.pack(side="left", padx=(0,8))
-        self.btn_pause.pack(side="left", padx=(0,6))
+        # Row 3 — secondary actions only. The primary Download button now lives
+        # next to the paste box, so nothing competes with it here.
+        act = tk.Frame(tab, bg=T["BG"]); act.pack(fill="x", padx=6, pady=(10,14))
+        self._act_row = act
+        self.btn_pause  = ttk.Button(act, text="❚❚ Pause",    style="Ghost.TButton", command=self._do_pause,  state="disabled")
+        self.btn_cancel = ttk.Button(act, text="✕ Cancel",    style="Ghost.TButton", command=self._do_cancel, state="disabled")
+        self.btn_pause.pack(side="left", padx=(0,8))
         self.btn_cancel.pack(side="left")
-        ttk.Button(btns, text="Grab from page", style="Ghost.TButton",
-                   command=self._site_grab_dialog).pack(side="left", padx=(14,0))
-        ttk.Button(btns, text="◎ Basket", style="Ghost.TButton",
-                   command=self._toggle_basket).pack(side="left", padx=(6,0))
-        ttk.Button(btns, text="🧩 Extension", style="Ghost.TButton",
-                   command=self._ext_dialog).pack(side="left", padx=(6,0))
-        self._ghost_btn(btns, "Clear Log",   self._clear_log).pack(side="right")
-        self._ghost_btn(btns, "Clear Queue", self._clear_queue).pack(side="right", padx=(0,6))
+        ttk.Button(act, text="Grab from page", style="Ghost.TButton",
+                   command=self._site_grab_dialog).pack(side="left", padx=(18,0))
+        ttk.Button(act, text="◎ Basket", style="Ghost.TButton",
+                   command=self._toggle_basket).pack(side="left", padx=(8,0))
+        ttk.Button(act, text="🧩 Extension", style="Ghost.TButton",
+                   command=self._ext_dialog).pack(side="left", padx=(8,0))
+        self._ghost_btn(act, "Clear Queue", self._clear_queue).pack(side="right")
 
         # Resume banner (initially hidden)
         self.res_frame = tk.Frame(tab, bg="#152a15")
         self.res_lbl   = tk.Label(self.res_frame, text="", bg="#152a15", fg=T["GREEN"],
-                                  font=("Helvetica",11,"bold"), padx=14, pady=8)
+                                  font=_f(11,"bold"), padx=14, pady=8)
         self.res_lbl.pack(side="left")
         rb = tk.Frame(self.res_frame, bg="#152a15"); rb.pack(side="right", padx=8)
         ttk.Button(rb, text="Resume", style="Main.TButton", command=self._do_resume).pack(side="left", padx=(0,6))
         ttk.Button(rb, text="Discard",  style="Ghost.TButton", command=self._discard).pack(side="left")
 
         # Queue area (scrollable card list)
-        sec = tk.Frame(tab, bg=T["BG"]); sec.pack(fill="x", padx=4, pady=(2,4))
+        sec = tk.Frame(tab, bg=T["BG"]); sec.pack(fill="x", padx=6, pady=(2,6))
         tk.Label(sec, text="QUEUE", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",9,"bold")).pack(side="left")
+                 font=_f(8,"bold")).pack(side="left")
+        self._log_toggle = tk.Label(sec, text="", bg=T["BG"], fg=T["ACCENT"],
+                                    font=_f(9,"bold"), cursor="hand2")
+        self._log_toggle.pack(side="right", padx=(10,0))
+        self._log_toggle.bind("<Button-1>", lambda e: self._toggle_log())
         tk.Frame(sec, bg=T["BORDER"], height=1).pack(side="left", fill="x", expand=True, padx=(8,0))
 
         body = tk.Frame(tab, bg=T["BG"])
@@ -1043,15 +1385,22 @@ class App:
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
         self._empty_lbl = tk.Label(self.q_frame,
             text="No downloads yet. Paste URLs and press Download.",
-            bg=T["BG"], fg=T["MUTED"], font=("Helvetica",10))
+            bg=T["BG"], fg=T["MUTED"], font=_f(10))
         self._empty_lbl.pack(pady=24)
 
-        # Log section
-        log_sec = tk.Frame(tab, bg=T["BG"]); log_sec.pack(fill="x", padx=4, pady=(8,4))
-        tk.Label(log_sec, text="LOG", bg=T["BG"], fg=T["MUTED"], font=("Helvetica",9,"bold")).pack(side="left")
-        tk.Frame(log_sec, bg=T["BORDER"], height=1).pack(side="left", fill="x", expand=True, padx=(8,0))
-        lf = tk.Frame(tab, bg=T["BG"]); lf.pack(fill="x", padx=4, pady=(2,10))
-        self.log_txt = tk.Text(lf, height=6, font=("Menlo",9),
+        # Log section — hidden by default (most people never need it); the
+        # "Show log" toggle sits in the QUEUE header and remembers its state.
+        log_sec = tk.Frame(tab, bg=T["BG"])
+        tk.Label(log_sec, text="LOG", bg=T["BG"], fg=T["MUTED"], font=_f(8,"bold")).pack(side="left")
+        # right-hand button first: an expanding separator packed before it would
+        # eat the width and clip the button off the edge
+        self._ghost_btn(log_sec, "Clear Log", self._clear_log).pack(side="right")
+        tk.Frame(log_sec, bg=T["BORDER"], height=1).pack(side="left", fill="x",
+                                                         expand=True, padx=(8,10))
+        self._log_head = log_sec
+        lf = tk.Frame(tab, bg=T["BG"])
+        self._log_body = lf
+        self.log_txt = tk.Text(lf, height=6, font=_mono(9),
                                bg=T["LOG_BG"], fg=T["LOG_FG"], relief="flat",
                                padx=10, pady=8, wrap="word", state="disabled")
         self.log_txt.pack(side="left", fill="both", expand=True)
@@ -1060,12 +1409,15 @@ class App:
                         ("info",T["ACCENT"]),("dim",T["LOG_FG"])]:
             self.log_txt.tag_configure(tag, foreground=col)
 
+        self._toggle_adv(bool(self.cfg.get("adv_open", False)))
+        self._toggle_log(bool(self.cfg.get("log_open", False)))
+
     # -- Tab: History -------------------------------------------------------
     def _tab_history(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text="  📁  History  ")
+        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   History   ")
         top = tk.Frame(tab, bg=T["BG"]); top.pack(fill="x", padx=4, pady=10)
         tk.Label(top, text="Past Downloads", bg=T["BG"], fg=T["ACCENT"],
-                 font=("Helvetica",13,"bold")).pack(side="left")
+                 font=_f(13,"bold")).pack(side="left")
         self.hist_search = tk.StringVar()
         e = self._entry(top, self.hist_search); e.pack(side="right", padx=(8,0))
         e.configure(width=24)
@@ -1130,10 +1482,7 @@ class App:
     def _hist_reveal(self):
         p = self._hist_sel_path()
         if not p: return
-        d = str(Path(p).parent)
-        if   platform.system()=="Darwin":  subprocess.run(["open","-R",p] if Path(p).exists() else ["open",d])
-        elif platform.system()=="Windows": subprocess.run(["explorer","/select,", p])
-        else:                              subprocess.run(["xdg-open", d])
+        _reveal_path(p)
 
     def _hist_redownload(self):
         sel = self.hist_tree.selection()
@@ -1177,7 +1526,7 @@ class App:
 
     # -- Tab: Stats ---------------------------------------------------------
     def _tab_stats(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text="  📊  Stats  ")
+        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   Stats   ")
         self.stats_tab = tab
         self._build_stats_view()
 
@@ -1187,7 +1536,7 @@ class App:
 
         head = tk.Frame(self.stats_tab, bg=T["BG"]); head.pack(fill="x", padx=4, pady=10)
         tk.Label(head, text="Lifetime Statistics", bg=T["BG"], fg=T["ACCENT"],
-                 font=("Helvetica",13,"bold")).pack(side="left")
+                 font=_f(13,"bold")).pack(side="left")
         ttk.Button(head, text="Refresh", style="Ghost.TButton",
                    command=self._build_stats_view).pack(side="right")
         ttk.Button(head, text="Reset Stats", style="Danger.TButton",
@@ -1205,29 +1554,29 @@ class App:
         for label, val, col in cards:
             c = tk.Frame(nums, bg=T["SURF"], padx=14, pady=12)
             c.pack(side="left", padx=4, fill="both", expand=True)
-            tk.Label(c, text=val,  bg=T["SURF"], fg=col, font=("Helvetica",18,"bold")).pack(anchor="w")
-            tk.Label(c, text=label, bg=T["SURF"], fg=T["MUTED"], font=("Helvetica",9)).pack(anchor="w")
+            tk.Label(c, text=val,  bg=T["SURF"], fg=col, font=_f(18,"bold")).pack(anchor="w")
+            tk.Label(c, text=label, bg=T["SURF"], fg=T["MUTED"], font=_f(9)).pack(anchor="w")
 
         # By category bar
         cat_frame = tk.Frame(self.stats_tab, bg=T["BG"]); cat_frame.pack(fill="x", padx=4, pady=10)
         tk.Label(cat_frame, text="Files by Category", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",10,"bold")).pack(anchor="w", pady=(0,6))
+                 font=_f(10,"bold")).pack(anchor="w", pady=(0,6))
         cats = d.get("by_category",{}) or {}
         total = sum(cats.values()) or 1
         for cat, n in sorted(cats.items(), key=lambda x:-x[1]):
             row = tk.Frame(cat_frame, bg=T["BG"]); row.pack(fill="x", pady=2)
             tk.Label(row, text=cat, bg=T["BG"], fg=T["TEXT"], width=12, anchor="w",
-                     font=("Helvetica",10)).pack(side="left")
+                     font=_f(10)).pack(side="left")
             bar_outer = tk.Frame(row, bg=T["SURF2"], height=16); bar_outer.pack(side="left", fill="x", expand=True, padx=8)
             frac = n/total
             tk.Frame(bar_outer, bg=T["ACCENT"], height=16, width=int(400*frac)).place(x=0,y=0)
             tk.Label(row, text=f"{n}", bg=T["BG"], fg=T["MUTED"], width=8, anchor="e",
-                     font=("Helvetica",10)).pack(side="right")
+                     font=_f(10)).pack(side="right")
 
         # By day (last 14)
         day_frame = tk.Frame(self.stats_tab, bg=T["BG"]); day_frame.pack(fill="x", padx=4, pady=10)
         tk.Label(day_frame, text="Last 14 Days (Data)", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",10,"bold")).pack(anchor="w", pady=(0,6))
+                 font=_f(10,"bold")).pack(anchor="w", pady=(0,6))
         import datetime as _dt
         today = _dt.date.today()
         days = [(today - _dt.timedelta(days=i)).isoformat() for i in range(13,-1,-1)]
@@ -1242,7 +1591,7 @@ class App:
             x = i*(bw+4) + 2
             h = (b/mx)*110 if b else 2
             canvas.create_rectangle(x, 130-h, x+bw, 130, fill=T["ACCENT"], outline="")
-            canvas.create_text(x+bw/2, 138, text=day[5:], fill=T["MUTED"], font=("Helvetica",7))
+            canvas.create_text(x+bw/2, 138, text=day[5:], fill=T["MUTED"], font=_f(7))
 
     def _reset_stats(self):
         if not messagebox.askyesno(APP_NAME,"Reset all lifetime statistics?"): return
@@ -1255,12 +1604,12 @@ class App:
 
     # -- Tab: Settings ------------------------------------------------------
     def _tab_settings(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text="  ⚙  Settings  ")
+        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   Settings   ")
         head = tk.Frame(tab, bg=T["BG"]); head.pack(fill="x", padx=14, pady=(14,10))
         tk.Label(head, text="Settings", bg=T["BG"], fg=T["ACCENT"],
-                 font=("Helvetica",15,"bold")).pack(side="left")
+                 font=_f(15,"bold")).pack(side="left")
         tk.Label(head, text="(saved automatically)", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",9)).pack(side="left", padx=(8,0), pady=(4,0))
+                 font=_f(9)).pack(side="left", padx=(8,0), pady=(4,0))
 
         # Two-column grid layout for clean alignment
         body = tk.Frame(tab, bg=T["BG"]); body.pack(fill="both", expand=True, padx=14)
@@ -1269,12 +1618,19 @@ class App:
 
         # Theme dropdown
         self._add_setting(body, 0, "Theme",
-            lambda r: tk.OptionMenu(r, tk.StringVar(value=self.cfg.get("theme","Light")),
-                                    *THEMES.keys(), command=self._on_theme))
+            lambda r: RoundedSelect(r, tk.StringVar(value=self.cfg.get("theme", _def_theme_name())),
+                                    list(THEMES.keys()), width=170,
+                                    command=self._on_theme))
+
+        # Text size — the old fixed 9-11 pt fonts read small on Retina Macs
+        self._add_setting(body, 1, "Text size",
+            lambda r: RoundedSelect(r, tk.StringVar(value=self.cfg.get("text_size","Default")),
+                                    list(TEXT_SIZES.keys()), width=170,
+                                    command=self._on_text_size))
 
         # Concurrent downloads
         self.concur_var = tk.IntVar(value=self.cfg.get("concurrent",3))
-        self._add_setting(body, 1, "Concurrent downloads (1-5)",
+        self._add_setting(body, 2, "Concurrent downloads (1-5)",
             lambda r: tk.Scale(r, from_=1, to=MAX_CONCURRENT, orient="horizontal",
                                variable=self.concur_var, length=200,
                                bg=T["BG"], fg=T["TEXT"], troughcolor=T["SURF2"],
@@ -1283,7 +1639,7 @@ class App:
 
         # Speed limit
         self.rate_var = tk.IntVar(value=self.cfg.get("rate_kbps",0))
-        self._add_setting(body, 2, "Speed limit (KB/s — 0 = unlimited)",
+        self._add_setting(body, 3, "Speed limit (KB/s — 0 = unlimited)",
             lambda r: tk.Scale(r, from_=0, to=50000, resolution=100, orient="horizontal",
                                variable=self.rate_var, length=300,
                                bg=T["BG"], fg=T["TEXT"], troughcolor=T["SURF2"],
@@ -1292,52 +1648,52 @@ class App:
 
         # Auto-categorize
         self.cat_var = tk.BooleanVar(value=self.cfg.get("categorize", False))
-        self._add_setting(body, 3, "Auto-organize into site folders (YouTube / Facebook / Artgrid …)",
-            lambda r: ttk.Checkbutton(r, variable=self.cat_var,
+        self._add_setting(body, 4, "Auto-organize into site folders (YouTube / Facebook / Artgrid …)",
+            lambda r: Switch(r, "", self.cat_var,
                 command=lambda: self._save_setting("categorize", self.cat_var.get())))
 
         # Completion sound
         self.snd_var = tk.BooleanVar(value=self.cfg.get("completion_sound", True))
-        self._add_setting(body, 4, "Play sound on completion",
-            lambda r: ttk.Checkbutton(r, variable=self.snd_var,
+        self._add_setting(body, 5, "Play sound on completion",
+            lambda r: Switch(r, "", self.snd_var,
                 command=lambda: self._save_setting("completion_sound", self.snd_var.get())))
 
         # Shutdown after
         self.shut_var = tk.BooleanVar(value=self.cfg.get("shutdown_after", False))
-        self._add_setting(body, 5, "Shut down computer after all downloads complete",
-            lambda r: ttk.Checkbutton(r, variable=self.shut_var,
+        self._add_setting(body, 6, "Shut down computer after all downloads complete",
+            lambda r: Switch(r, "", self.shut_var,
                 command=lambda: self._save_setting("shutdown_after", self.shut_var.get())))
 
         # Conflict resolution
         self.conf_var = tk.StringVar(value=self.cfg.get("conflict","rename"))
-        self._add_setting(body, 6, "When file exists",
-            lambda r: tk.OptionMenu(r, self.conf_var, "rename","overwrite","skip","ask",
+        self._add_setting(body, 7, "When file exists",
+            lambda r: RoundedSelect(r, self.conf_var, ["rename","overwrite","skip","ask"],
+                                    width=150,
                                     command=lambda v: self._save_setting("conflict", v)))
 
         # Auto-launch on system startup
         self.auto_var = tk.BooleanVar(value=self.cfg.get("autostart", True))
-        self._add_setting(body, 7, "Launch automatically when computer starts",
-            lambda r: ttk.Checkbutton(r, variable=self.auto_var,
+        self._add_setting(body, 8, "Launch automatically when computer starts",
+            lambda r: Switch(r, "", self.auto_var,
                 command=lambda: (self._save_setting("autostart", self.auto_var.get()),
                                  self._apply_autostart(self.auto_var.get()))))
 
         # Subtitle languages (used when the Subtitles checkbox is on)
         SUB_LANG_OPTS = ["en,bn", "en", "bn", "hi", "ar", "es", "en,bn,hi", "all"]
         self.slang_var = tk.StringVar(value=str(self.cfg.get("sub_langs", "en,bn")))
-        self._add_setting(body, 8, "Subtitle languages (when Subtitles is ticked)",
-            lambda r: tk.OptionMenu(r, self.slang_var, *SUB_LANG_OPTS,
+        self._add_setting(body, 9, "Subtitle languages (when Subtitles is ticked)",
+            lambda r: RoundedSelect(r, self.slang_var, SUB_LANG_OPTS, width=150,
                                     command=lambda v: self._save_setting("sub_langs", v)))
 
         # Software update
-        self._add_setting(body, 9, f"Software update (installed: v{APP_VER})",
-            lambda r: ttk.Button(r, text="⬇ Check & Update Now", style="Main.TButton",
-                                 command=self._update_now))
+        self._add_setting(body, 10, f"Software update (installed: v{APP_VER})",
+            lambda r: RoundedButton(r, "⬇  Check & Update Now", self._update_now))
 
         # Footer
         ftr = tk.Frame(tab, bg=T["BG"]); ftr.pack(fill="x", padx=14, pady=(18,14))
         tk.Frame(ftr, bg=T["BORDER"], height=1).pack(fill="x", pady=(0,10))
         tk.Label(ftr, text=f"Config file: {CFG_PATH}", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",9)).pack(anchor="w")
+                 font=_f(9)).pack(anchor="w")
         ttk.Button(ftr, text="Open config folder", style="Ghost.TButton",
                    command=lambda: subprocess.run(["open" if platform.system()=="Darwin"
                                                    else "xdg-open", str(CFG_PATH.parent)])
@@ -1345,7 +1701,7 @@ class App:
 
     def _add_setting(self, parent, row, label, widget_factory):
         """Place label in col 0, widget (built via factory) in col 1 of grid row."""
-        tk.Label(parent, text=label, bg=T["BG"], fg=T["TEXT"], font=("Helvetica",10),
+        tk.Label(parent, text=label, bg=T["BG"], fg=T["TEXT"], font=_f(10),
                  anchor="w").grid(row=row, column=0, sticky="w", pady=10, padx=(0,16))
         cell = tk.Frame(parent, bg=T["BG"])
         cell.grid(row=row, column=1, sticky="w", pady=10)
@@ -1420,6 +1776,13 @@ class App:
     def _on_theme(self, name):
         self.set_theme(name, refresh=True)
 
+    def _on_text_size(self, name):
+        """Fonts are baked into widgets at build time, so — like the theme — the
+        new size lands on the next launch."""
+        if name == self.cfg.get("text_size"): return
+        self._save_setting("text_size", name)
+        messagebox.showinfo(APP_NAME, "Text size will apply after you restart the app.")
+
     # -- res ----------------------------------------------------------------
     def _r(self, n):
         r = res_path()
@@ -1428,13 +1791,13 @@ class App:
 
     # -- UI helpers ---------------------------------------------------------
     def _lbl(self, p, t):
-        return tk.Label(p, text=t, bg=T["BG"], fg=T["MUTED"], font=("Helvetica",10,"bold"))
+        return tk.Label(p, text=t, bg=T["BG"], fg=T["MUTED"], font=_f(10,"bold"))
 
     def _entry(self, p, var):
         return tk.Entry(p, textvariable=var, bg=T["SURF"], fg=T["TEXT"],
                         insertbackground=T["ACCENT"], relief="flat",
                         highlightthickness=1, highlightbackground=T["BORDER"],
-                        highlightcolor=T["ACCENT"], font=("Helvetica",10))
+                        highlightcolor=T["ACCENT"], font=_f(10))
 
     def _ghost_btn(self, p, t, cmd):
         return ttk.Button(p, text=t, style="Ghost.TButton", command=cmd)
@@ -1442,11 +1805,55 @@ class App:
     def _style_menu(self, m):
         m.configure(bg=T["SURF2"], fg=T["TEXT"], activebackground=T["MAROON"],
                     activeforeground=T["ACCENT"], highlightthickness=0,
-                    font=("Helvetica",10), relief="flat", bd=0, anchor="w")
+                    font=_f(10), relief="flat", bd=0, anchor="w")
         m["menu"].configure(bg=T["SURF2"], fg=T["TEXT"], activebackground=T["MAROON"],
-                            activeforeground=T["ACCENT"], font=("Helvetica",10))
+                            activeforeground=T["ACCENT"], font=_f(10))
 
     # -- folder -------------------------------------------------------------
+    def _toggle_adv(self, show=None):
+        """Fold the Format/Mode/Cookies/Schedule card away. Remembered in cfg."""
+        open_ = (not getattr(self, "_adv_is_open", False)) if show is None else bool(show)
+        self._adv_is_open = open_
+        self.cfg["adv_open"] = open_
+        try: jsave(CFG_PATH, self.cfg)
+        except Exception: pass
+        self._adv_lbl.configure(text=("▾  Advanced options" if open_ else "▸  Advanced options"))
+        if open_:
+            self._adv_frame.pack(fill="x", padx=6, pady=(0,10), before=self._act_row)
+        else:
+            self._adv_frame.pack_forget()
+        self._adv_summary()
+
+    def _adv_summary(self, *_):
+        """When folded, show what the hidden settings are set to."""
+        if getattr(self, "_adv_is_open", False):
+            self._adv_sum.configure(text=""); return
+        try:
+            fmt = self.fmt_var.get().split(":", 1)[-1].strip()
+            ck  = self.ck_var.get()
+            sch = self._sched_var.get()
+            bits = [fmt, "cookies: " + ck]
+            if sch and sch != "Now": bits.append(sch)
+            self._adv_sum.configure(text="·  " + "   ·   ".join(bits))
+        except Exception:
+            pass
+
+    def _toggle_log(self, show=None):
+        """Hide the log panel so the queue gets the space. Remembered in cfg."""
+        open_ = (not getattr(self, "_log_is_open", False)) if show is None else bool(show)
+        self._log_is_open = open_
+        self.cfg["log_open"] = open_
+        try: jsave(CFG_PATH, self.cfg)
+        except Exception: pass
+        self._log_toggle.configure(text=("Hide log  ▴" if open_ else "Show log  ▾"))
+        if open_:
+            # side="bottom" so the log takes its space from the queue instead of
+            # being pushed off the window by the expanding queue list
+            self._log_body.pack(side="bottom", fill="x", padx=6, pady=(2,12))
+            self._log_head.pack(side="bottom", fill="x", padx=6, pady=(10,4))
+        else:
+            self._log_head.pack_forget(); self._log_body.pack_forget()
+
     def _pick_folder(self):
         d = filedialog.askdirectory(initialdir=self.folder_var.get())
         if d: self.folder_var.set(d)
@@ -1491,7 +1898,7 @@ class App:
         self._row_widgets.clear()
         self._empty_lbl = tk.Label(self.q_frame,
             text="No downloads yet. Paste URLs and press Download.",
-            bg=T["BG"], fg=T["MUTED"], font=("Helvetica",10))
+            bg=T["BG"], fg=T["MUTED"], font=_f(10))
         self._empty_lbl.pack(pady=24)
         self._items = []
         self.url_box.delete("1.0","end")
@@ -1503,7 +1910,7 @@ class App:
         if not items:
             self._empty_lbl = tk.Label(self.q_frame,
                 text="No downloads yet.", bg=T["BG"], fg=T["MUTED"],
-                font=("Helvetica",10))
+                font=_f(10))
             self._empty_lbl.pack(pady=24); return
         for item in items: self._build_card(item)
         # Re-apply each item's REAL status: _build_card renders the default ⏳ icon, so any rebuild
@@ -1516,12 +1923,12 @@ class App:
     def _build_card(self, item):
         card = tk.Frame(self.q_frame, bg=T["SURF"], highlightthickness=1,
                         highlightbackground=T["BORDER"])
-        card.pack(fill="x", pady=3, ipady=8, ipadx=10)
+        card.pack(fill="x", pady=3, ipady=5, ipadx=10)
         inner = tk.Frame(card, bg=T["SURF"]); inner.pack(fill="x")
 
         # Left: status icon
         ico = tk.Label(inner, text="⏳", bg=T["SURF"], fg=T["MUTED"],
-                       font=("Helvetica",16), width=2)
+                       font=_f(16), width=2)
         ico.grid(row=0, column=0, rowspan=2, padx=(6,6), pady=4)
 
         # Thumbnail placeholder (PIL only)
@@ -1544,20 +1951,20 @@ class App:
 
         cat = categorize(item.name)
         badge = tk.Label(mid, text=f" {item.badge} ", bg=T["MAROON"], fg=T["ACCENT"],
-                         font=("Helvetica",8,"bold"), padx=4, pady=1)
+                         font=_f(8,"bold"), padx=4, pady=1)
         badge.pack(side="left", padx=(0,6))
         cat_badge = tk.Label(mid, text=f" {cat} ", bg=T["SURF2"], fg=T["MUTED"],
-                             font=("Helvetica",8), padx=4, pady=1)
+                             font=_f(8), padx=4, pady=1)
         cat_badge.pack(side="left", padx=(0,8))
 
         short = item.name if len(item.name)<=70 else item.name[:67]+"..."
         name = tk.Label(mid, text=f"[{item.idx}/{item.total}] {short}",
-                        bg=T["SURF"], fg=T["TEXT"], font=("Helvetica",10,"bold"),
+                        bg=T["SURF"], fg=T["TEXT"], font=_f(10,"bold"),
                         anchor="w")
         name.pack(side="left", fill="x", expand=True)
 
         meta = tk.Label(inner, text="Waiting...", bg=T["SURF"], fg=T["MUTED"],
-                        font=("Helvetica",9), anchor="w")
+                        font=_f(9), anchor="w")
         meta.grid(row=1, column=mid_col, sticky="ew", pady=(2,4))
 
         prog = ttk.Progressbar(inner, mode="determinate", maximum=100, length=220)
@@ -1575,18 +1982,32 @@ class App:
         # were showing an enabled ⏸ until their first status update).
         if item.status == "paused": pbtn.configure(text="▶")
         elif item.status not in ("waiting", "downloading"): pbtn.configure(state="disabled")
-        pbtn.pack(pady=(0,2))
+        pbtn.grid(row=0, column=0, padx=(0,2), pady=(0,2))
         ttk.Button(act, text="✕", style="Ghost.TButton",
                    command=lambda i=item: self._remove_item(i),
-                   width=2).pack()
+                   width=2).grid(row=0, column=1, pady=(0,2))
+        # Second row: where the file went, and where it came from. The folder
+        # button stays disabled until the file actually exists on disk.
+        fbtn = ttk.Button(act, text="📂", style="Ghost.TButton",
+                          command=lambda i=item: self._reveal_item(i), width=2)
+        fbtn.grid(row=1, column=0, padx=(0,2))
+        if not (item.done_f and Path(item.done_f).exists()):
+            fbtn.configure(state="disabled")
+        sbtn = ttk.Button(act, text="↗", style="Ghost.TButton",
+                          command=lambda i=item: self._open_source(i), width=2)
+        sbtn.grid(row=1, column=1)
+        if not str(item.url or "").startswith("http"):
+            sbtn.configure(state="disabled")
+        _tip(fbtn, "Show the file in " + ("Finder" if platform.system()=="Darwin" else "the folder"))
+        _tip(sbtn, "Open the page this came from")
 
         self._row_widgets[item.id] = {
             "card":card,"icon":ico,"name":name,"meta":meta,"prog":prog,"thumb":thumb,
-            "pbtn":pbtn,
+            "pbtn":pbtn,"fbtn":fbtn,"sbtn":sbtn,
         }
         item.row = card
         item._lbl_icon = ico; item._lbl_name = name; item._lbl_meta = meta; item._prog = prog
-        item._btn_pause = pbtn
+        item._btn_pause = pbtn; item._btn_folder = fbtn; item._btn_src = sbtn
 
     def _fetch_thumb(self, item, label):
         """Async fetch + display thumbnail for queue card. PIL only."""
@@ -1667,6 +2088,18 @@ class App:
         self._workers.append(t); t.start()
         self.log(f"[resume] {getattr(item,'name',item.url)[:55]}")
 
+    def _reveal_item(self, item):
+        """📂 — jump straight to the finished file in Finder/Explorer."""
+        f = getattr(item, "done_f", None)
+        if f and Path(f).exists(): _reveal_path(f)
+        else:                      self._open_folder()
+
+    def _open_source(self, item):
+        """↗ — reopen the page this row came from. For sniffed Artlist/Artgrid
+        streams item.url is a raw .m3u8, so prefer the referer we stored."""
+        u = str(self._referers.get(item.url) or item.url or "")
+        if u.startswith("http"): webbrowser.open(u)
+
     def _remove_item(self, item):
         if item.status in ("downloading", "waiting") and not getattr(item, "_prev_run", False):
             # First ✕ = cancel just this row (worker exits at the next chunk).
@@ -1707,6 +2140,12 @@ class App:
                     pb.configure(text="⏸", state="normal")
                 else:
                     pb.configure(state="disabled")
+            except Exception: pass
+        fb = getattr(item, "_btn_folder", None)
+        if fb:
+            try:
+                fb.configure(state="normal" if (item.done_f and Path(item.done_f).exists())
+                             else "disabled")
             except Exception: pass
         parts = []
         if item.size_v:  parts.append(sz(item.size_v))
@@ -2104,12 +2543,12 @@ class App:
         w = tk.Toplevel(self.root); w.title("Browser integration")
         w.configure(bg=T["BG"]); w.geometry("520x300"); w.transient(self.root)
         tk.Label(w, text="🧩 Browser extension", bg=T["BG"], fg=T["TEXT"],
-                 font=("Helvetica", 14, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
+                 font=_f(14, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
         tk.Label(w, text=("The extension adds the ⬇ Download button on top of videos\n"
                           "(IDM style) and catches downloads from the browser."),
                  bg=T["BG"], fg=T["MUTED"], justify="left",
-                 font=("Helvetica", 11)).pack(anchor="w", padx=16)
-        stat_lbl = tk.Label(w, text="", bg=T["BG"], font=("Helvetica", 11, "bold"))
+                 font=_f(11)).pack(anchor="w", padx=16)
+        stat_lbl = tk.Label(w, text="", bg=T["BG"], font=_f(11, "bold"))
         stat_lbl.pack(anchor="w", padx=16, pady=(8, 2))
         def _stat_tick():
             if not w.winfo_exists(): return
@@ -2130,7 +2569,7 @@ class App:
                           "1. Open chrome://extensions   2. Turn on Developer mode\n"
                           "3. \u201cLoad unpacked\u201d \u2192 pick the app\u2019s \u2018extension\u2019 folder"),
                  bg=T["BG"], fg=T["MUTED"], justify="left",
-                 font=("Menlo", 10)).pack(anchor="w", padx=16, pady=(12, 0))
+                 font=_mono(10)).pack(anchor="w", padx=16, pady=(12, 0))
         ttk.Button(w, text="Close", style="Ghost.TButton", command=w.destroy).pack(anchor="e", padx=16, pady=12)
 
     # ── Playlist picker (choose items before downloading) ───────────────
@@ -2173,7 +2612,7 @@ class App:
         w = tk.Toplevel(self.root); w.title(f"Playlist — {len(entries)} items")
         w.configure(bg=T["BG"]); w.geometry("620x520"); w.transient(self.root)
         tk.Label(w, text=f"Select what to download ({len(entries)} items found)",
-                 bg=T["BG"], fg=T["TEXT"], font=("Helvetica", 13, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
+                 bg=T["BG"], fg=T["TEXT"], font=_f(13, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
         # scrollable checkbox list
         body = tk.Frame(w, bg=T["BG"]); body.pack(fill="both", expand=True, padx=14)
         cv = tk.Canvas(body, bg=T["BG"], highlightthickness=0)
@@ -2191,13 +2630,13 @@ class App:
             ttk.Checkbutton(row, variable=v).pack(side="left")
             t = e["title"] if len(e["title"]) <= 68 else e["title"][:65] + "…"
             tk.Label(row, text=f"{i+1:>3}. {t}", bg=T["BG"], fg=T["TEXT"], anchor="w",
-                     font=("Helvetica", 11)).pack(side="left", fill="x", expand=True)
+                     font=_f(11)).pack(side="left", fill="x", expand=True)
             if e["dur"]:
                 tk.Label(row, text=e["dur"], bg=T["BG"], fg=T["MUTED"],
-                         font=("Menlo", 10)).pack(side="right", padx=(0, 6))
+                         font=_mono(10)).pack(side="right", padx=(0, 6))
         # footer: select all/none, count, quality, download
         foot = tk.Frame(w, bg=T["BG"]); foot.pack(fill="x", padx=14, pady=10)
-        cnt = tk.Label(foot, text="", bg=T["BG"], fg=T["ACCENT"], font=("Helvetica", 10, "bold"))
+        cnt = tk.Label(foot, text="", bg=T["BG"], fg=T["ACCENT"], font=_f(10, "bold"))
         def refresh_cnt(*_):
             cnt.config(text=f"{sum(v.get() for v in vars_)} selected")
         for v in vars_: v.trace_add("write", refresh_cnt)
@@ -2481,7 +2920,7 @@ class App:
         x, y = self.cfg.get("basket_xy", [sw - 130, 90])
         b.geometry(f"74x74+{int(x)}+{int(y)}")
         b.configure(bg=T["ACCENT"])
-        lbl = tk.Label(b, text="⬇", bg=T["ACCENT"], fg="#0a0606", font=("Helvetica", 30, "bold"))
+        lbl = tk.Label(b, text="⬇", bg=T["ACCENT"], fg="#0a0606", font=_f(30, "bold"))
         lbl.pack(fill="both", expand=True)
         # drag to move · CLICK to add a link (clipboard auto-fill) · double-click restore
         def press(e):
@@ -2648,11 +3087,11 @@ class App:
         except Exception: pass
         first = urls[0] if urls else ""
         tk.Label(w, text="New download", bg=T["BG"], fg=T["TEXT"],
-                 font=("Helvetica", 13, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
+                 font=_f(13, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
         # Editable URL row — basket CLICK opens this popup with the clipboard URL
         # (or empty, ready to paste); drops land with the URL already filled.
         uvar = tk.StringVar(value=first)
-        ue = tk.Entry(w, textvariable=uvar, font=("Menlo", 10),
+        ue = tk.Entry(w, textvariable=uvar, font=_mono(10),
                       bg=T["SURF"], fg=T["TEXT"], insertbackground=T["TEXT"],
                       relief="flat", highlightthickness=1,
                       highlightbackground=T["BORDER"], highlightcolor=T["ACCENT"])
@@ -2662,7 +3101,7 @@ class App:
         ue.bind("<Return>", lambda e: dl_now())
         if len(urls) > 1:
             tk.Label(w, text=f"+{len(urls)-1} more link(s) from the drop", bg=T["BG"],
-                     fg=T["MUTED"], font=("Helvetica", 9)).pack(anchor="w", padx=16)
+                     fg=T["MUTED"], font=_f(9)).pack(anchor="w", padx=16)
         def _final_urls():
             u = [x for x in ([uvar.get().strip()] + list(urls[1:])) if URL_RE.match(x or "")]
             seen = set(); return [x for x in u if not (x in seen or seen.add(x))]
@@ -2745,11 +3184,11 @@ class App:
             try: self.root.destroy()
             finally: os._exit(0)
         w.protocol("WM_DELETE_WINDOW", quit_app)
-        tk.Label(w, text="🔑 License required", font=("Helvetica", 18, "bold"),
+        tk.Label(w, text="🔑 License required", font=_f(18, "bold"),
                  bg=T["BG"], fg=T["TEXT"]).pack(padx=30, pady=(24, 6))
         tk.Label(w, text="ZH Downloader needs an activation key.\nPaste the key from your purchase message to continue.",
                  bg=T["BG"], fg=T["MUTED"], justify="center").pack(padx=30)
-        ent = tk.Entry(w, width=34, font=("Menlo", 13), justify="center")
+        ent = tk.Entry(w, width=34, font=_mono(13), justify="center")
         ent.pack(padx=30, pady=14, ipady=5); ent.focus_set()
         msg = tk.Label(w, text="", bg=T["BG"], fg=T["RED"]); msg.pack()
         btns = tk.Frame(w, bg=T["BG"]); btns.pack(pady=(6, 22))
@@ -2829,8 +3268,8 @@ class App:
         win = tk.Toplevel(self.root); win.title("ZH Downloader Pro")
         win.configure(bg=T["BG"]); win.geometry("440x420"); win.resizable(False, False)
         tk.Label(win, text="ZH Downloader Pro", bg=T["BG"], fg=T["ACCENT"],
-                 font=("Helvetica", 18, "bold")).pack(anchor="w", padx=18, pady=(16,2))
-        status = tk.Label(win, bg=T["BG"], font=("Helvetica", 12, "bold"))
+                 font=_f(18, "bold")).pack(anchor="w", padx=18, pady=(16,2))
+        status = tk.Label(win, bg=T["BG"], font=_f(12, "bold"))
         status.pack(anchor="w", padx=18)
         feats = ("✓  4K / 8K downloads", "✓  Batch & playlists (many URLs at once)",
                  "✓  Scheduler", "✓  Faster concurrent downloads",
@@ -2838,9 +3277,9 @@ class App:
         for f in feats:
             tk.Label(win, text="   "+f, bg=T["BG"], fg=T["TEXT"], anchor="w").pack(fill="x", padx=18)
         tk.Label(win, text="License key", bg=T["BG"], fg=T["TEXT"], anchor="w",
-                 font=("Helvetica", 11, "bold")).pack(fill="x", padx=18, pady=(14,2))
+                 font=_f(11, "bold")).pack(fill="x", padx=18, pady=(14,2))
         row = tk.Frame(win, bg=T["BG"]); row.pack(fill="x", padx=18)
-        entry = tk.Entry(row, font=("Menlo", 12)); entry.pack(side="left", fill="x", expand=True, ipady=4)
+        entry = tk.Entry(row, font=_mono(12)); entry.pack(side="left", fill="x", expand=True, ipady=4)
         def do_activate():
             key = entry.get().strip()
             if not key: messagebox.showinfo("License","Enter your key."); return
@@ -2872,7 +3311,7 @@ class App:
             else:
                 status.configure(text="○ Free version", fg=T["MUTED"])
         link = tk.Label(win, text="Buy a key → zhmotions.com/shop", bg=T["BG"], fg=T["ACCENT"],
-                        cursor="hand2", font=("Helvetica", 11, "underline"))
+                        cursor="hand2", font=_f(11, "underline"))
         link.pack(anchor="w", padx=18, pady=(12,0))
         link.bind("<Button-1>", lambda e: webbrowser.open(BUY_URL))
         tk.Button(win, text="Deactivate", command=deactivate).pack(anchor="w", padx=18, pady=12)
@@ -3479,11 +3918,19 @@ class App:
                     opts2 = dict(opts); opts2.pop("cookiesfrombrowser", None)
                     _try(opts2)
                 elif ("cannot parse" in emsg or "login required" in emsg or "log in" in emsg) \
-                        and "facebook" in url.lower() and "cookiesfrombrowser" not in opts:
-                    # Facebook's markup only parses for logged-in sessions these
-                    # days — a cookie-less run dies with "Cannot parse data".
-                    self.log("[warn] Facebook needs login cookies — retrying with Chrome cookies (stay logged in to facebook.com in Chrome)")
-                    opts2 = dict(opts); opts2["cookiesfrombrowser"] = ("chrome",)
+                        and "facebook" in url.lower():
+                    # Facebook breaks BOTH ways, so flip whatever the first run
+                    # used. A logged-in session gets the React shell for public
+                    # reels/watch pages ("Cannot parse data"), while private or
+                    # friends-only videos need exactly that session. Verified on
+                    # yt-dlp 2026.07.04 AND 2026.08.19: /reel/<id> parses fine
+                    # logged-out and fails with Chrome cookies attached.
+                    if "cookiesfrombrowser" in opts:
+                        self.log("[warn] Facebook: logged-in page didn't parse — retrying without cookies")
+                        opts2 = dict(opts); opts2.pop("cookiesfrombrowser", None)
+                    else:
+                        self.log("[warn] Facebook needs login cookies — retrying with Chrome cookies (stay logged in to facebook.com in Chrome)")
+                        opts2 = dict(opts); opts2["cookiesfrombrowser"] = ("chrome",)
                     _try(opts2)
                 else: raise
             except Exception as e:
@@ -3545,6 +3992,8 @@ class App:
                 else: item.status = "paused" if self._paused else "cancelled"
             else:
                 self.log(f"[error] {e}")
+                hint = _error_hint(str(e), url)
+                if hint: self.log(f"[info] {hint}")
                 item.status="error"
             self._mq.put(("item_up",item))
         except Exception as e:
@@ -3991,11 +4440,11 @@ class App:
         d.geometry("600x420")
         d.configure(bg=T["BG"])
         tk.Label(d, text="Paste page URL — app will fetch HTML and extract media links",
-                 bg=T["BG"], fg=T["TEXT"], font=("Helvetica",10)).pack(pady=(14,6))
+                 bg=T["BG"], fg=T["TEXT"], font=_f(10)).pack(pady=(14,6))
         v = tk.StringVar()
         e = self._entry(d, v); e.pack(fill="x", padx=14, pady=6); e.focus()
         result = tk.Text(d, height=14, bg=T["INPUT"], fg=T["TEXT"], relief="flat",
-                         padx=10, pady=8, font=("Menlo",9))
+                         padx=10, pady=8, font=_mono(9))
         result.pack(fill="both", expand=True, padx=14, pady=8)
 
         def grab():
@@ -4093,10 +4542,10 @@ class App:
         w.title("Shutdown scheduled")
         w.geometry("400x180"); w.configure(bg=T["BG"])
         tk.Label(w, text="⚠ Shutdown in 60 seconds", bg=T["BG"], fg=T["RED"],
-                 font=("Helvetica",14,"bold")).pack(pady=14)
+                 font=_f(14,"bold")).pack(pady=14)
         cnt = tk.IntVar(value=60)
         lbl = tk.Label(w, textvariable=cnt, bg=T["BG"], fg=T["TEXT"],
-                       font=("Helvetica",32,"bold"))
+                       font=_f(32,"bold"))
         lbl.pack()
         cancelled = {"v":False}
         def tick():
@@ -4244,21 +4693,21 @@ class App:
         # Header
         h = tk.Frame(d, bg=T["HEADER"], height=54); h.pack(fill="x"); h.pack_propagate(False)
         tk.Label(h, text="📖  ZH Downloader — Quick Help", bg=T["HEADER"], fg=T["ACCENT"],
-                 font=("Helvetica",14,"bold")).pack(side="left", padx=18, pady=14)
+                 font=_f(14,"bold")).pack(side="left", padx=18, pady=14)
         tk.Frame(d, bg=T["BORDER"], height=1).pack(fill="x")
 
         # Body — scrollable text
         body = tk.Frame(d, bg=T["BG"]); body.pack(fill="both", expand=True, padx=18, pady=14)
-        txt = tk.Text(body, font=("Helvetica",10), bg=T["SURF"], fg=T["TEXT"],
+        txt = tk.Text(body, font=_f(10), bg=T["SURF"], fg=T["TEXT"],
                       relief="flat", padx=14, pady=10, wrap="word")
         txt.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(body, command=txt.yview); sb.pack(side="right", fill="y")
         txt.configure(yscrollcommand=sb.set)
 
-        for tag, col, font in [("h1", T["ACCENT"], ("Helvetica",13,"bold")),
-                                ("h2", T["TEXT"],   ("Helvetica",11,"bold")),
-                                ("b",  T["TEXT"],   ("Helvetica",10,"bold")),
-                                ("dim",T["MUTED"],  ("Helvetica",9))]:
+        for tag, col, font in [("h1", T["ACCENT"], _f(13,"bold")),
+                                ("h2", T["TEXT"],   _f(11,"bold")),
+                                ("b",  T["TEXT"],   _f(10,"bold")),
+                                ("dim",T["MUTED"],  _f(9))]:
             txt.tag_configure(tag, foreground=col, font=font)
 
         sections = [
@@ -4325,7 +4774,7 @@ class App:
         promo = tk.Frame(d, bg=T["SURF"], padx=14, pady=10)
         promo.pack(fill="x", padx=18, pady=(0,10))
         tk.Label(promo, text="🎬  Become a pro editor — ZH Motions Courses",
-                 bg=T["SURF"], fg=T["ACCENT"], font=("Helvetica",10,"bold")).pack(side="left")
+                 bg=T["SURF"], fg=T["ACCENT"], font=_f(10,"bold")).pack(side="left")
         ttk.Button(promo, text="Visit www.zhmotions.com", style="Main.TButton",
                    command=lambda: self._open_url("https://www.zhmotions.com")
                    ).pack(side="right")
@@ -4677,25 +5126,25 @@ class App:
             except: pass
 
         tk.Label(d, text=APP_NAME, bg=T["BG"], fg=T["ACCENT"],
-                 font=("Helvetica",20,"bold")).pack()
+                 font=_f(20,"bold")).pack()
         tk.Label(d, text=f"Version {APP_VER}", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",10)).pack(pady=(2,14))
+                 font=_f(10)).pack(pady=(2,14))
 
         # Branding box
         box = tk.Frame(d, bg=T["SURF"], padx=20, pady=14)
         box.pack(fill="x", padx=24, pady=8)
         tk.Label(box, text="ZH Downloader — by ZH Motions",
-                 bg=T["SURF"], fg=T["ACCENT"], font=("Helvetica",11,"bold")).pack(anchor="w")
+                 bg=T["SURF"], fg=T["ACCENT"], font=_f(11,"bold")).pack(anchor="w")
         tk.Label(box, text="Free desktop app. Only download content you own or are permitted to download.",
-                 bg=T["SURF"], fg=T["MUTED"], font=("Helvetica",9), wraplength=360,
+                 bg=T["SURF"], fg=T["MUTED"], font=_f(9), wraplength=360,
                  justify="left").pack(anchor="w", pady=(4,0))
 
         # Credits
         cred = tk.Frame(d, bg=T["BG"]); cred.pack(fill="x", padx=24, pady=14)
         tk.Label(cred, text="Built by ZH Motions", bg=T["BG"], fg=T["TEXT"],
-                 font=("Helvetica",10,"bold")).pack(anchor="w")
+                 font=_f(10,"bold")).pack(anchor="w")
         tk.Label(cred, text="zhmotions.com", bg=T["BG"], fg=T["ACCENT"],
-                 font=("Helvetica",9,"underline"), cursor="hand2"
+                 font=_f(9,"underline"), cursor="hand2"
                  ).pack(anchor="w").bind("<Button-1>",
                  lambda e: subprocess.Popen(["open", APP_URL]) if platform.system()=="Darwin"
                  else subprocess.Popen(["xdg-open", APP_URL])) if False else None
@@ -4703,22 +5152,22 @@ class App:
         # 3rd party credits
         legal = tk.Frame(d, bg=T["BG"]); legal.pack(fill="x", padx=24, pady=(4,8))
         tk.Label(legal, text="Powered by:", bg=T["BG"], fg=T["MUTED"],
-                 font=("Helvetica",9,"bold")).pack(anchor="w")
+                 font=_f(9,"bold")).pack(anchor="w")
         for tool, lic in [("yt-dlp", "Unlicense / public domain"),
                           ("Pillow (PIL)", "HPND License"),
                           ("tkinterdnd2", "MIT License"),
                           ("pystray", "LGPL-3.0"),
                           ("ffmpeg", "LGPL-2.1+")]:
             tk.Label(legal, text=f"  • {tool} — {lic}", bg=T["BG"], fg=T["MUTED"],
-                     font=("Helvetica",8)).pack(anchor="w")
+                     font=_f(8)).pack(anchor="w")
 
         # ZH Motions promo
         promo = tk.Frame(d, bg=T["SURF"], padx=18, pady=12)
         promo.pack(fill="x", padx=24, pady=10)
         tk.Label(promo, text="🎬  Level up your video editing skills",
-                 bg=T["SURF"], fg=T["ACCENT"], font=("Helvetica",11,"bold")).pack()
+                 bg=T["SURF"], fg=T["ACCENT"], font=_f(11,"bold")).pack()
         tk.Label(promo, text="Premiere Pro · After Effects · Color Grading · Freelance",
-                 bg=T["SURF"], fg=T["MUTED"], font=("Helvetica",9)).pack(pady=(2,8))
+                 bg=T["SURF"], fg=T["MUTED"], font=_f(9)).pack(pady=(2,8))
         ttk.Button(promo, text="🌐  Visit www.zhmotions.com", style="Main.TButton",
                    command=lambda: self._open_url("https://www.zhmotions.com")
                    ).pack()
