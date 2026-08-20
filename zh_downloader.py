@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.23"
+APP_VER     = "6.6.24"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -151,9 +151,9 @@ THEMES = {
     # anyone who prefers it and stays the default on Windows/Linux.
     "macOS": {
         "BG":"#f5f5f7","SURF":"#ffffff","SURF2":"#ececee","BORDER":"#d2d2d7",
-        "ACCENT":"#007aff","ACCENT2":"#0060df","MAROON":"#e8f0fe",
+        "ACCENT":"#2549e6","ACCENT2":"#1a37b8","MAROON":"#e4e9ff",
         "TEXT":"#1d1d1f","MUTED":"#6e6e73",
-        "GREEN":"#34c759","YELLOW":"#ff9f0a","RED":"#ff3b30","BLUE":"#007aff","PURPLE":"#af52de",
+        "GREEN":"#34c759","YELLOW":"#ff9f0a","RED":"#ff3b30","BLUE":"#2549e6","PURPLE":"#af52de",
         "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#fbfbfd","LOG_FG":"#48484a",
     },
     # Default light — clean modern flat UI
