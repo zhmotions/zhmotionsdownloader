@@ -9,6 +9,8 @@
 #                       reopen the source page) and the Text-size font helpers
 #   widgets_test.py     builds the custom-drawn controls on a real (withdrawn) Tk
 #                       root — both bugs here were tkinter attribute shadowing
+#   smoke_ui_test.py    builds the real window (HOME redirected, bridge/tray/network
+#                       stubbed) and calls every callback that reaches for a widget
 #   bg.test.js          runs extension/background.js inside a node vm with a
 #                       stubbed chrome API (sniffed-stream persistence across a
 #                       service-worker restart, pending-queue TTL, hand-back of
@@ -37,6 +39,10 @@ python3 "$here/fb_retry_test.py"
 echo
 echo "== queue-row actions + font scaling =="
 python3 "$here/row_actions_test.py"
+
+echo
+echo "== whole-UI smoke (real App on a withdrawn root) =="
+python3 "$here/smoke_ui_test.py"
 
 echo
 echo "== custom controls (RoundedButton / RoundedSelect / Switch) =="
