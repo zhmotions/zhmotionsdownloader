@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.26"
+APP_VER     = "6.6.27"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -604,6 +604,11 @@ class QueueList(tk.Canvas):
     # -- data
     def set_items(self, items):
         self.items = list(items or [])
+        for it in self.items:                      # thumbnails load once, lazily
+            if HAS_PIL and not hasattr(it, "_thumb_started"):
+                it._thumb_started = True
+                threading.Thread(target=self.app._fetch_thumb, args=(it,),
+                                 daemon=True).start()
         live = {str(i.id) for i in self.items}
         self._sel &= live
         self.redraw()
@@ -685,13 +690,33 @@ class QueueList(tk.Canvas):
                                  fill=T["GREEN"] if item.status == "done" else T["ACCENT"],
                                  width=3, capstyle="round")
         # actions
-        acts = [("⏸" if item.status != "paused" else "▶", "pause"),
-                ("📂", "folder"), ("↗", "source"), ("✕", "remove")]
-        for i, (glyph, action) in enumerate(acts):
-            self.create_text(x2-96 + i*24, y1+52, text=glyph, fill=T["MUTED"],
-                             font=_f(9), tags=("act", "a=%s" % action, "i=%s" % item.id))
-        self.create_rectangle(x1, y1, x2, y2, outline="", fill="",
-                              tags=("row", "i=%s" % item.id))
+        done_file = bool(item.done_f and Path(item.done_f).exists())
+        acts = [("⏸" if item.status != "paused" else "▶", "pause",
+                 item.status in ("waiting", "downloading", "paused")),
+                ("📂", "folder", done_file),
+                ("↗", "source", str(item.url or "").startswith("http")),
+                ("✕", "remove", True)]
+        for i, (glyph, action, live) in enumerate(acts):
+            cx_a = x2 - 96 + i*24
+            # the glyph is small, so an invisible 22x22 pad carries the click
+            self.create_rectangle(cx_a-11, y1+41, cx_a+11, y1+63, outline="", fill="",
+                                  tags=("act", "a=%s" % action, "i=%s" % item.id,
+                                        "on" if live else "off"))
+            col = T["TEXT"] if live else T["BORDER"]
+            tags = ("act", "a=%s" % action, "i=%s" % item.id, "on" if live else "off")
+            if action == "folder":
+                # 📂 is a colour-emoji glyph: Tk ignores `fill`, so a disabled
+                # folder still looked enabled. Draw the icon instead.
+                self.create_line(cx_a-7, y1+47, cx_a-2, y1+47, cx_a, y1+50,
+                                 cx_a+7, y1+50, fill=col, width=1)
+                self.create_rectangle(cx_a-7, y1+47, cx_a+7, y1+58,
+                                      outline=col, width=1, tags=tags)
+            else:
+                self.create_text(cx_a, y1+52, text=glyph, fill=col, font=_f(9),
+                                 tags=tags)
+        # row-wide click target, drawn FIRST so the action pads sit above it
+        self.tag_lower(self.create_rectangle(x1, y1, x2, y2, outline="", fill="",
+                                             tags=("row", "i=%s" % item.id)))
 
     # -- interaction
     def _tag_of(self, prefix, tags):
@@ -700,18 +725,32 @@ class QueueList(tk.Canvas):
         return None
 
     def _at(self, e):
+        """Which row, and which action, is under the pointer.
+
+        find_overlapping matches by bounding box, so the row-wide rectangle
+        overlaps every glyph — the action has to win explicitly or the icons
+        look dead (they were)."""
         y = self.canvasy(e.y); x = self.canvasx(e.x)
-        for cid in reversed(self.find_overlapping(x-1, y-1, x+1, y+1)):
+        hits = self.find_overlapping(x-1, y-1, x+1, y+1)
+        row = None
+        for cid in reversed(hits):
             tags = self.gettags(cid)
             iid = self._tag_of("i=", tags)
-            if iid: return iid, ("act" in tags and self._tag_of("a=", tags))
-        return None, None
+            if not iid: continue
+            if "act" in tags:
+                return iid, (self._tag_of("a=", tags) if "off" not in tags else "disabled")
+            row = row or iid
+        return row, None
 
     def _item(self, iid):
         return next((i for i in self.items if str(i.id) == str(iid)), None)
 
     def _motion(self, e):
-        iid, _ = self._at(e)
+        iid, act = self._at(e)
+        try:
+            self.configure(cursor="hand2" if (act and act != "disabled") else "arrow")
+        except Exception: pass
+
         h = int(iid) if iid and str(iid).isdigit() else iid
         if h != self._hover_row:
             self._hover_row = h
@@ -722,6 +761,8 @@ class QueueList(tk.Canvas):
         if not iid: return
         item = self._item(iid)
         if not item: return
+        if action == "disabled":
+            return
         if action:
             {"pause":  self.app._pause_item,
              "folder": self.app._reveal_item,
@@ -2397,7 +2438,7 @@ class App:
     def _source_selected(self):
         for it in self._selected_items()[:3]: self._open_source(it)
 
-    def _fetch_thumb(self, item, label):
+    def _fetch_thumb(self, item, label=None):
         """Async fetch + display thumbnail for queue card. PIL only."""
         if not HAS_PIL: return
         THUMBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -2434,13 +2475,15 @@ class App:
                 cache.write_bytes(data)
             # Load + resize
             img = Image.open(cache).convert("RGB")
-            img.thumbnail((96, 54), Image.LANCZOS)
+            img.thumbnail((74, 52), Image.LANCZOS)
             tk_img = ImageTk.PhotoImage(img)
-            # Apply on main thread
+            # Apply on the main thread. Rows are painted on a canvas now, so the
+            # image lives on the item and the list repaints itself.
             def apply():
-                if not label.winfo_exists(): return
-                label.configure(image=tk_img, width=96, height=54, text="")
-                label.image = tk_img  # keep ref
+                item._thumb_img = tk_img          # keep a ref or Tk drops it
+                try:
+                    if getattr(self, "queue", None): self.queue.redraw()
+                except Exception: pass
             self.root.after(0, apply)
         except Exception:
             pass

@@ -109,6 +109,67 @@ root.update_idletasks()
 eq("panel has an inner content frame", bool(panel.inner.winfo_exists()), True)
 eq("panel accepts a ttk parent bg lookup", zhd._pbg(panel) != "", True)
 
+# ── QueueList: the row action icons must actually fire ──────────────────
+# They were dead once: the row-wide click rectangle overlaps every glyph, and
+# find_overlapping matches by bounding box, so the row always won the hit test.
+calls = []
+
+
+class FakeApp:
+    def _pause_item(self, i):  calls.append(("pause", i))
+    def _reveal_item(self, i): calls.append(("folder", i))
+    def _open_source(self, i): calls.append(("source", i))
+    def _remove_item(self, i): calls.append(("remove", i))
+    def _sync_toolbar(self):   pass
+    def _queue_menu(self, e):  pass
+
+
+class Ev:
+    def __init__(self, x, y, state=0): self.x, self.y, self.state = x, y, state
+
+
+import tempfile as _tf
+tmpf = pathlib.Path(_tf.mkdtemp()) / "done.mp4"
+tmpf.write_bytes(b"x" * 32)
+
+done = zhd.DL("https://youtu.be/a", 1, 2, ""); done.status = "done"; done.done_f = str(tmpf)
+live = zhd.DL("https://youtu.be/b", 2, 2, ""); live.status = "downloading"; live.pct = 40
+
+ql = zhd.QueueList(frame, FakeApp())
+ql.pack(fill="both", expand=True)
+ql.configure(width=900, height=300)
+root.update_idletasks()
+ql.set_items([done, live])
+root.update_idletasks()
+
+
+def click_action(item, action):
+    """Click the middle of that row's action pad."""
+    ids = [c for c in ql.find_withtag("a=%s" % action)
+           if ("i=%s" % item.id) in ql.gettags(c)]
+    x1, y1, x2, y2 = ql.bbox(ids[0])
+    ql._click(Ev((x1 + x2) // 2, (y1 + y2) // 2))
+
+
+eq("list drew both rows", len(ql.items), 2)
+click_action(done, "folder")
+eq("folder icon fires on a finished row", [c[0] for c in calls], ["folder"])
+click_action(done, "source")
+eq("source icon fires", [c[0] for c in calls][-1], "source")
+click_action(live, "pause")
+eq("pause icon fires on the live row", [c[0] for c in calls][-1], "pause")
+calls.clear()
+click_action(live, "folder")          # no file yet → disabled
+eq("folder stays dead while the file does not exist", calls, [])
+click_action(done, "remove")
+eq("remove icon fires", [c[0] for c in calls], ["remove"])
+
+# clicking the row body selects instead of acting
+calls.clear()
+ql._click(Ev(300, 30))
+eq("clicking the row body selects it", len(ql.selection()), 1)
+eq("and runs no action", calls, [])
+
 root.destroy()
 print()
 print(("%d FAILED, " % fails if fails else "") + "%d passed" % passes)
