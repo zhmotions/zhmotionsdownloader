@@ -87,6 +87,40 @@ web.calls.clear()
 app._open_source(mk("/Users/me/local.mp4"))
 eq("a local file has no source page", web.calls, [])
 
+# ── the update cache does not hoard installers ──────────────────────────
+import tempfile as _tf2
+cache = pathlib.Path(_tf2.mkdtemp())
+for n in ("ZHDownloader-6.6.20.pkg", "ZHDownloader-6.6.26.pkg",
+          "ZHDownloader-9.9.9.pkg", "notes.txt"):
+    (cache / n).write_bytes(b"x")
+zhd.UPD_DIR = cache
+zhd.APP_VER = "6.6.27"
+zhd._prune_update_cache()
+left = sorted(f.name for f in cache.iterdir())
+eq("installers already applied are deleted", left,
+   ["ZHDownloader-9.9.9.pkg", "notes.txt"])
+
+# ── full disk: refuse to start, and say so ──────────────────────────────
+import collections as _c
+import shutil as _sh
+
+_du = _c.namedtuple("du", "total used free")
+app = make_app()
+app.status_var = type("V", (), {"set": lambda self, v: None})()
+zhd.shutil.disk_usage = lambda p: _du(500, 499, 200 * 1024 * 1024)   # 200 MB left
+eq("a nearly full disk blocks the start", app._space_ok("/tmp"), False)
+eq("and the log names the real problem",
+   any("free on the disk" in m for m in app.logs), True)
+app.logs.clear()
+zhd.shutil.disk_usage = lambda p: _du(500, 100, 40 * 1024**3)        # 40 GB left
+eq("plenty of room starts normally", app._space_ok("/tmp"), True)
+eq("and stays quiet", app.logs, [])
+zhd.shutil.disk_usage = _sh.disk_usage
+
+eq("the disk-full error explains itself",
+   "disk is full" in zhd._error_hint("ERROR: [Errno 28] No space left on device: '/x/y.webp'"),
+   True)
+
 # ── Pinterest: variant playlist → master (full quality) ──────────────────
 H = "https://v1.pinimg.com/videos/iht/hls/23/65/73/abc123abc123def"
 eq("a 540w variant is rewritten to the master",

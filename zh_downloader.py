@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.27"
+APP_VER     = "6.6.28"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -344,6 +344,9 @@ def _error_hint(msg, url=""):
                 "ZH browser extension's Download button instead.")
     if "private" in m and "video" in m:
         return "The video is private — cookies from an account that can see it are needed."
+    if "no space left" in m or "errno 28" in m:
+        return ("Your disk is full — free up space, or pick another folder in "
+                "Advanced options → Save to, then press Download again.")
     if "http error 403" in m:
         return "403 from the site — try Cookies → your browser, or a different Format."
     return ""
@@ -2248,6 +2251,25 @@ class App:
                             activeforeground=T["ACCENT"], font=_f(10))
 
     # -- folder -------------------------------------------------------------
+    def _space_ok(self, out):
+        """Refuse to start on a full disk. yt-dlp's failure for that is
+        '[Errno 28] No space left on device' on a thumbnail write, which the
+        queue then reported as 'no media found' — the wrong problem entirely."""
+        try:
+            Path(out).mkdir(parents=True, exist_ok=True)
+            free = shutil.disk_usage(out).free
+        except Exception:
+            return True
+        if free >= 1024**3:                      # 1 GB headroom
+            return True
+        self.log(f"[error] only {sz(free)} free on the disk — downloads need room to "
+                 f"write the file and its temporary parts")
+        self.log("[info] free up space, or set another folder in Advanced options → Save to")
+        try:
+            self.status_var.set(f"Disk almost full — {sz(free)} free")
+        except Exception: pass
+        return False
+
     def _url_text(self):
         """Paste-box contents minus the placeholder line."""
         t = self.url_box.get("1.0", "end")
@@ -3814,6 +3836,7 @@ class App:
 
     def _do_start(self, urls, out, fk):
         self._stop.clear()
+        if not self._space_ok(out): return
         self._paused      = False
         self._done_files  = []
         self._spd_history = []
@@ -5669,6 +5692,22 @@ def _register_url_scheme_windows():
 
 UPD_DIR = Path.home() / ".zhdownloader-updates"
 
+def _prune_update_cache():
+    """Installers we already ran are dead weight — two of them cost 320 MB, which
+    is real money on a full disk. Keep anything newer than this build (a pending
+    update), drop the rest."""
+    def vt(v): return tuple(int(x) for x in str(v).split(".") if x.isdigit())
+    try:
+        for f in UPD_DIR.glob("ZHDownloader-*"):
+            if f.suffix.lower() not in (".pkg", ".msi", ".exe", ".dmg"): continue
+            ver = f.stem.split("-")[-1]
+            if vt(ver) and vt(ver) <= vt(APP_VER):
+                try: f.unlink()
+                except Exception: pass
+    except Exception:
+        pass
+
+
 def _pending_update_install():
     """Before the UI: a newer installer auto-downloaded on a previous run? Launch it
     now and exit — 'restart the app = the update installs itself'. One attempt per
@@ -5706,6 +5745,7 @@ def main():
     """Staged startup so any optional feature failure can't crash app."""
     global HAS_DND
     _pending_update_install()
+    _prune_update_cache()
 
     # Make bundled binaries findable (node for YouTube PoToken, etc)
     _prepend_bundled_bins_to_path()
