@@ -49,6 +49,22 @@ eq('mp4 beats audio-only',
    pick('https://x/y.m4a', 'https://x/y.mp4'), 'https://x/y.mp4');
 eq('nothing sniffed → null', pick(), null);
 
+
+// ── Facebook: the reel FEED is not a video ───────────────────────────────
+// /reel/?s=tab carries no id; the old check just looked for the word "reel",
+// so the feed URL was sent as-is and yt-dlp answered "Unsupported URL".
+const fbStart = src.indexOf('function isFbVideoPage');
+const fbEnd = src.indexOf('\n  }', fbStart);
+const isFbVideoPage = eval('(' + src.slice(fbStart, fbEnd + 4) + ')');
+[['/reel/?s=tab', false],
+ ['/reel/1650134176280128', true],
+ ['/watch/?v=1416358443875238', true],
+ ['/videos/1234567890', true],
+ ['/share/v/abc123/', true],
+ ['/', false],
+ ['/watch/', false],
+ ['/marketplace/item/99', false],
+].forEach(([u, want]) => eq('isFbVideoPage ' + u, isFbVideoPage(u), want));
 console.log();
 console.log((fails ? fails + ' FAILED, ' : '') + passes + ' passed');
 process.exit(fails ? 1 : 0);

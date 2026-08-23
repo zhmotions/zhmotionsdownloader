@@ -89,7 +89,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("out")
     ap.add_argument("--tab", default="0")
-    ap.add_argument("--theme", default="macOS")
+    ap.add_argument("--theme", default="Graphite")
     ap.add_argument("--size", default="Default")
     ap.add_argument("--cfg", action="append", default=[],
                     help="extra config, e.g. --cfg adv_open=1 --cfg log_open=1")

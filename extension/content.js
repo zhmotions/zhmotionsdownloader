@@ -446,6 +446,19 @@
 
   var curVid = null, hideT = null;
 
+  // "Is this URL already ONE Facebook video?" The reel FEED lives at
+  // /reel/?s=tab — no id — and the old check only looked for the word "reel",
+  // so the feed URL was sent as-is and yt-dlp answered "Unsupported URL".
+  // A real video page always carries an id.
+  function isFbVideoPage(pathAndSearch) {
+    var s = pathAndSearch || "";
+    return /\/reel\/\d+/.test(s) ||
+           /\/videos\/(\d+|[\w.-]+\/\d+)/.test(s) ||
+           /[?&]v=\d+/.test(s) ||
+           /\/share\/[vr]\/[\w-]+/.test(s) ||
+           /\/watch\/live\/\?v=\d+/.test(s);
+  }
+
   function videoUrlFor(v) {
     // On feed/search/list pages the page URL is a LIST — yt-dlp can't extract
     // from it ("Unsupported URL" on X, "playlist: 0 items" on YouTube). The
@@ -474,8 +487,7 @@
         if (xu) return xu.split("?")[0];
       }
       // Facebook feeds: the card links the real /watch?v= | /videos/ | /reel/.
-      if (host.includes("facebook.com") && v &&
-          !(/\/videos\/|\/reel|\/watch\/?\?v=|\/share\/v\//.test(location.pathname + location.search))) {
+      if (host.includes("facebook.com") && v && !isFbVideoPage(location.pathname + location.search)) {
         var fu = walkUp(v, 'a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/?v="], a[href*="/watch?v="], a[href*="/share/v/"]');
         if (fu) return fu;
       }

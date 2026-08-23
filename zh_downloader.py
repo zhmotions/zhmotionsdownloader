@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.24"
+APP_VER     = "6.6.25"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -155,6 +155,23 @@ THEMES = {
         "TEXT":"#1d1d1f","MUTED":"#6e6e73",
         "GREEN":"#34c759","YELLOW":"#ff9f0a","RED":"#ff3b30","BLUE":"#2549e6","PURPLE":"#af52de",
         "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#fbfbfd","LOG_FG":"#48484a",
+    },
+    # Graphite — near-neutral: the only colour is on the primary button and the
+    # progress bar, everything else is paper and ink.
+    "Graphite": {
+        "BG":"#f6f6f7","SURF":"#ffffff","SURF2":"#eceef0","BORDER":"#dcdee1",
+        "ACCENT":"#26282c","ACCENT2":"#101113","MAROON":"#e8eaed",
+        "TEXT":"#1b1d20","MUTED":"#6c727a",
+        "GREEN":"#1f9254","YELLOW":"#b8860b","RED":"#c0392b","BLUE":"#3a6ea5","PURPLE":"#6b4fa8",
+        "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#fafafb","LOG_FG":"#5b6169",
+    },
+    # Carbon — dark first, for editors who keep the app open all day
+    "Carbon": {
+        "BG":"#16181c","SURF":"#1d2025","SURF2":"#24282e","BORDER":"#31363e",
+        "ACCENT":"#4c8dff","ACCENT2":"#3a76dd","MAROON":"#22303f",
+        "TEXT":"#e6e8ea","MUTED":"#8b929b",
+        "GREEN":"#4ec97a","YELLOW":"#e5b567","RED":"#ff6b6b","BLUE":"#4c8dff","PURPLE":"#b48ead",
+        "HEADER":"#1a1d22","INPUT":"#1d2025","LOG_BG":"#111318","LOG_FG":"#767d87",
     },
     # Default light — clean modern flat UI
     "Light": {
@@ -254,7 +271,10 @@ def _mono(size, *style):
 TEXT_SIZES = {"Small": 0.9, "Default": 1.0, "Large": 1.15, "Extra large": 1.3}
 
 def _def_theme_name():
-    return "macOS" if platform.system() == "Darwin" else "Light"
+    # Graphite everywhere now: near-neutral, so the only colour on screen is the
+    # primary button and a row's status. Carbon (dark) and macOS (blue) stay as
+    # choices in Settings.
+    return "Graphite"
 
 def _pinterest_master(url):
     """Pinterest HLS: turn a single-quality variant into the master playlist.
@@ -517,6 +537,73 @@ class RoundedSlider(tk.Canvas):
                          outline=T["BORDER"])
         self.create_text(x1 + 12, y, text=f"{int(val)}{self._suffix}", anchor="w",
                          fill=T["TEXT"], font=self._font)
+
+
+class SideNav(tk.Frame):
+    """Left sidebar navigation that speaks ttk.Notebook's API.
+
+    The window moved from tabs to a Neat-Download-Manager style sidebar, and
+    every caller (and the screenshot harness) already says nb.add(...) /
+    nb.select(i), so this keeps that surface: add() registers a page, select()
+    raises it, index('current') reports the visible one."""
+
+    def __init__(self, parent, width=190, **kw):
+        super().__init__(parent, bg=T["BG"], **kw)
+        self._pages, self._buttons = [], []
+        self.bar = tk.Frame(self, bg=T["SURF"], width=width)
+        self.bar.pack(side="left", fill="y"); self.bar.pack_propagate(False)
+        tk.Frame(self, bg=T["BORDER"], width=1).pack(side="left", fill="y")
+        self.body = tk.Frame(self, bg=T["BG"])
+        self.body.pack(side="left", fill="both", expand=True)
+        self._current = None
+
+    def section(self, title):
+        tk.Label(self.bar, text=title.upper(), bg=T["SURF"], fg=T["MUTED"],
+                 font=_f(7,"bold"), anchor="w").pack(fill="x", padx=16, pady=(14,4))
+
+    def add(self, child, text="", icon=""):
+        i = len(self._pages)
+        row = tk.Frame(self.bar, bg=T["SURF"], cursor="hand2")
+        row.pack(fill="x")
+        lbl = tk.Label(row, text=("%s  %s" % (icon, text.strip())).strip(),
+                       bg=T["SURF"], fg=T["TEXT"], font=_f(10), anchor="w",
+                       padx=16, pady=7)
+        lbl.pack(fill="x")
+        for w in (row, lbl):
+            w.bind("<Button-1>", lambda e, n=i: self.select(n))
+            w.bind("<Enter>", lambda e, n=i: self._hover(n, True))
+            w.bind("<Leave>", lambda e, n=i: self._hover(n, False))
+        self._pages.append(child); self._buttons.append((row, lbl))
+        if i == 0: self.select(0)
+        return i
+
+    def _hover(self, i, on):
+        if i == self._current: return
+        bg = T["SURF2"] if on else T["SURF"]
+        row, lbl = self._buttons[i]
+        row.configure(bg=bg); lbl.configure(bg=bg)
+
+    def select(self, i):
+        if isinstance(i, str): return
+        try: i = int(i)
+        except Exception: return
+        if not (0 <= i < len(self._pages)): return
+        for n, (row, lbl) in enumerate(self._buttons):
+            sel = (n == i)
+            row.configure(bg=T["MAROON"] if sel else T["SURF"])
+            lbl.configure(bg=T["MAROON"] if sel else T["SURF"],
+                          fg=T["ACCENT"] if sel else T["TEXT"],
+                          font=_f(10,"bold") if sel else _f(10))
+        for n, page in enumerate(self._pages):
+            if n == i: page.pack(fill="both", expand=True)
+            else:      page.pack_forget()
+        self._current = i
+
+    def index(self, which="current"):
+        return self._current or 0
+
+    def tabs(self):
+        return list(range(len(self._pages)))
 
 
 class RoundedPanel(tk.Frame):
@@ -1103,7 +1190,7 @@ class App:
 
         self.cfg       = jload(CFG_PATH, {
             "dir":DEFAULT_DIR, "fmt":"4k", "cookies":default_cookies, "clip":True,
-            "theme":"macOS" if platform.system()=="Darwin" else "Light",
+            "theme": _def_theme_name(),
             "concurrent":3, "rate_kbps":0, "categorize":False,
             "completion_sound":True, "shutdown_after":False, "conflict":"rename",
             "autostart":True, "text_size":"Default",
@@ -1113,8 +1200,7 @@ class App:
         global UI_SCALE
         UI_SCALE = TEXT_SIZES.get(self.cfg.get("text_size","Default"), 1.0)
         # Apply theme
-        _def_theme = "macOS" if platform.system()=="Darwin" else "Light"
-        self.set_theme(self.cfg.get("theme", _def_theme), refresh=False)
+        self.set_theme(self.cfg.get("theme", _def_theme_name()), refresh=False)
         self.state     = jload(STATE_PATH,{"queue":[]})
         self.history   = HistoryStore()
         self.stats     = StatsStore()
@@ -1138,7 +1224,8 @@ class App:
         self._ext_titles  = {}   # url -> page title hint from the browser extension
         self._recent_sends = {}  # dedup-key -> ts of last bridge send (repeat-click guard)
         self.ff           = find_ff()
-        self._row_widgets = {}   # item.id -> dict of widget refs
+        self._row_widgets = {}   # item.id -> queue-table row iid
+        self._filter_btns = {}   # queue filter chips
 
         root.title(f"{APP_NAME} v{APP_VER}")
         # Bump Tk font scaling ~25% — on a retina display Tk renders true point sizes, which looked
@@ -1344,11 +1431,14 @@ class App:
                 pass
 
         # Tabs
-        self.nb = ttk.Notebook(self.root)
-        self.nb.pack(fill="both", expand=True, padx=24, pady=(10,0))
+        self.nb = SideNav(self.root)
+        self.nb.pack(fill="both", expand=True, padx=0, pady=0)
+        self.nb.section("Downloads")
         self._tab_downloads()
+        self.nb.section("Library")
         self._tab_history()
         self._tab_stats()
+        self.nb.section("App")
         self._tab_settings()
 
         # Bottom status bar
@@ -1374,7 +1464,7 @@ class App:
 
     # -- Tab: Downloads -----------------------------------------------------
     def _tab_downloads(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   Downloads   ")
+        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="All Downloads", icon="⬇")
         # Row 1 — the two things every download needs: where it lands.
         fld = tk.Frame(tab, bg=T["BG"]); fld.pack(fill="x", padx=6, pady=(12,8))
         self._lbl(fld, "Save to").pack(side="left", padx=(0,10))
@@ -1447,56 +1537,88 @@ class App:
         for _v in (self.fmt_var, self.ck_var, self._sched_var):
             _v.trace_add("write", lambda *a: self._adv_summary())
 
-        # Row 3 — secondary actions only. The primary Download button now lives
-        # next to the paste box, so nothing competes with it here.
+        # Row 3 — a toolbar that acts on the selected rows, like any download
+        # manager. Pause/Cancel/Remove/Show/Source stay disabled until something
+        # is selected, so the row itself carries no buttons any more.
         act = tk.Frame(tab, bg=T["BG"]); act.pack(fill="x", padx=6, pady=(8,10))
         self._act_row = act
-        self.btn_pause  = ttk.Button(act, text="❚❚ Pause",    style="Ghost.TButton", command=self._do_pause,  state="disabled")
-        self.btn_cancel = ttk.Button(act, text="✕ Cancel",    style="Ghost.TButton", command=self._do_cancel, state="disabled")
-        self.btn_pause.pack(side="left", padx=(0,8))
-        self.btn_cancel.pack(side="left")
-        ttk.Button(act, text="Grab from page", style="Ghost.TButton",
-                   command=self._site_grab_dialog).pack(side="left", padx=(18,0))
-        ttk.Button(act, text="◎ Basket", style="Ghost.TButton",
-                   command=self._toggle_basket).pack(side="left", padx=(8,0))
-        ttk.Button(act, text="🧩 Extension", style="Ghost.TButton",
-                   command=self._ext_dialog).pack(side="left", padx=(8,0))
-        self._ghost_btn(act, "Clear Queue", self._clear_queue).pack(side="right")
 
-        # Resume banner (initially hidden)
+        def tb(text, cmd, side="left", pad=(0,6)):
+            b = ttk.Button(act, text=text, style="Ghost.TButton", command=cmd,
+                           state="disabled")
+            b.pack(side=side, padx=pad)
+            return b
+
+        self._tb_pause  = tb("❚❚  Pause",  self._pause_selected)
+        self._tb_cancel = tb("✕  Cancel",  self._cancel_selected)
+        self._tb_folder = tb("📂  Show",   self._reveal_selected, pad=(12,6))
+        self._tb_source = tb("↗  Source",  self._source_selected)
+        self._tb_remove = tb("🗑  Remove",  self._remove_selected)
+        # kept for the code that drives the old buttons by name
+        self.btn_pause, self.btn_cancel = self._tb_pause, self._tb_cancel
+
+        ttk.Button(act, text="Grab from page", style="Ghost.TButton",
+                   command=self._site_grab_dialog).pack(side="right")
+        ttk.Button(act, text="🧩 Extension", style="Ghost.TButton",
+                   command=self._ext_dialog).pack(side="right", padx=(0,6))
+        ttk.Button(act, text="◎ Basket", style="Ghost.TButton",
+                   command=self._toggle_basket).pack(side="right", padx=(0,6))
+        self._ghost_btn(act, "Clear Queue", self._clear_queue).pack(side="right", padx=(0,6))
+
+        # Resume banner (hidden until an interrupted session is found)
         self.res_frame = tk.Frame(tab, bg="#152a15")
         self.res_lbl   = tk.Label(self.res_frame, text="", bg="#152a15", fg=T["GREEN"],
                                   font=_f(11,"bold"), padx=14, pady=8)
         self.res_lbl.pack(side="left")
         rb = tk.Frame(self.res_frame, bg="#152a15"); rb.pack(side="right", padx=8)
-        ttk.Button(rb, text="Resume", style="Main.TButton", command=self._do_resume).pack(side="left", padx=(0,6))
-        ttk.Button(rb, text="Discard",  style="Ghost.TButton", command=self._discard).pack(side="left")
+        ttk.Button(rb, text="Resume", style="Main.TButton",
+                   command=self._do_resume).pack(side="left", padx=(0,6))
+        ttk.Button(rb, text="Discard", style="Ghost.TButton",
+                   command=self._discard).pack(side="left")
 
-        # Queue area (scrollable card list)
-        sec = tk.Frame(tab, bg=T["BG"]); sec.pack(fill="x", padx=6, pady=(2,6))
-        tk.Label(sec, text="QUEUE", bg=T["BG"], fg=T["MUTED"],
-                 font=_f(8,"bold")).pack(side="left")
+        # Queue: a table, the way a download manager shows a queue — one dense
+        # row per file with Size / Status / Speed / ETA columns. The old card
+        # list only fit three downloads on screen.
+        sec = tk.Frame(tab, bg=T["BG"]); sec.pack(fill="x", padx=6, pady=(2,4))
+        self._filter = tk.StringVar(value="All")
+        for name in ("All", "Active", "Done", "Failed"):
+            b = tk.Label(sec, text=name, bg=T["BG"], fg=T["MUTED"], font=_f(9),
+                         padx=10, pady=3, cursor="hand2")
+            b.pack(side="left", padx=(0,4))
+            b.bind("<Button-1>", lambda e, n=name: self._set_filter(n))
+            self._filter_btns[name] = b
         self._log_toggle = tk.Label(sec, text="", bg=T["BG"], fg=T["ACCENT"],
                                     font=_f(9,"bold"), cursor="hand2")
         self._log_toggle.pack(side="right", padx=(10,0))
         self._log_toggle.bind("<Button-1>", lambda e: self._toggle_log())
-        tk.Frame(sec, bg=T["BORDER"], height=1).pack(side="left", fill="x", expand=True, padx=(8,0))
+        self._count_lbl = tk.Label(sec, text="", bg=T["BG"], fg=T["MUTED"], font=_f(9))
+        self._count_lbl.pack(side="right")
 
-        body = tk.Frame(tab, bg=T["BG"])
-        body.pack(fill="both", expand=True, padx=4, pady=(4,0))
-        canvas = tk.Canvas(body, bg=T["BG"], highlightthickness=0)
-        vsb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y"); canvas.pack(side="left", fill="both", expand=True)
-        self.q_frame = tk.Frame(canvas, bg=T["BG"])
-        self._q_win = canvas.create_window((0,0), window=self.q_frame, anchor="nw")
-        self.q_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(self._q_win, width=e.width))
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-        self._empty_lbl = tk.Label(self.q_frame,
-            text="No downloads yet. Paste URLs and press Download.",
-            bg=T["BG"], fg=T["MUTED"], font=_f(10))
-        self._empty_lbl.pack(pady=24)
+        body = RoundedPanel(tab, radius=12)
+        body.pack(fill="both", expand=True, padx=6, pady=(2,0))
+        cols = ("name", "size", "status", "speed", "eta")
+        self.q_tree = ttk.Treeview(body.inner, columns=cols, show="headings",
+                                   selectmode="extended")
+        for c, t, w, anchor in (("name","Name",420,"w"), ("size","Size",90,"e"),
+                                ("status","Status",130,"w"), ("speed","Speed",100,"e"),
+                                ("eta","Remaining",100,"e")):
+            self.q_tree.heading(c, text=t, anchor=anchor)
+            self.q_tree.column(c, width=w, anchor=anchor,
+                               stretch=(c == "name"), minwidth=60)
+        self.q_tree.tag_configure("odd",  background=T["BG"])
+        self.q_tree.tag_configure("even", background=T["SURF"])
+        self.q_tree.tag_configure("err",  foreground=T["RED"])
+        self.q_tree.tag_configure("ok",   foreground=T["GREEN"])
+        self.q_tree.pack(side="left", fill="both", expand=True, padx=(8,0), pady=8)
+        qsb = ttk.Scrollbar(body.inner, orient="vertical", command=self.q_tree.yview)
+        qsb.pack(side="right", fill="y", pady=8)
+        self.q_tree.configure(yscrollcommand=qsb.set)
+        self.q_tree.bind("<<TreeviewSelect>>", lambda e: self._sync_toolbar())
+        self.q_tree.bind("<Double-1>", lambda e: self._reveal_selected())
+        self.q_tree.bind("<Button-2>", self._queue_menu)
+        self.q_tree.bind("<Button-3>", self._queue_menu)
+        self.q_frame = body.inner          # kept: old code looks for it
+        self._set_filter("All")
 
         # Log section — hidden by default (most people never need it); the
         # "Show log" toggle sits in the QUEUE header and remembers its state.
@@ -1524,7 +1646,7 @@ class App:
 
     # -- Tab: History -------------------------------------------------------
     def _tab_history(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   History   ")
+        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="History", icon="🕘")
         top = tk.Frame(tab, bg=T["BG"]); top.pack(fill="x", padx=6, pady=(12,8))
         tk.Label(top, text="Past Downloads", bg=T["BG"], fg=T["ACCENT"],
                  font=_f(12,"bold")).pack(side="left")
@@ -1545,7 +1667,7 @@ class App:
                                       show="headings", height=18)
         for c,t,w in [("name","Name",340),("cat","Category",90),("size","Size",90),
                       ("when","When",140),("url","URL",260)]:
-            self.hist_tree.heading(c, text=t)
+            self.hist_tree.heading(c, text=t, anchor="w")
             self.hist_tree.column(c, width=w, anchor="w")
         self.hist_tree.tag_configure("odd", background=T["BG"])
         self.hist_tree.tag_configure("even", background=T["SURF"])
@@ -1642,7 +1764,7 @@ class App:
 
     # -- Tab: Stats ---------------------------------------------------------
     def _tab_stats(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   Stats   ")
+        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="Stats", icon="📊")
         self.stats_tab = tab
         self._build_stats_view()
 
@@ -1731,7 +1853,7 @@ class App:
 
     # -- Tab: Settings ------------------------------------------------------
     def _tab_settings(self):
-        tab = ttk.Frame(self.nb); self.nb.add(tab, text="   Settings   ")
+        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="Settings", icon="⚙")
         head = tk.Frame(tab, bg=T["BG"]); head.pack(fill="x", padx=14, pady=(14,10))
         tk.Label(head, text="Settings", bg=T["BG"], fg=T["ACCENT"],
                  font=_f(15,"bold")).pack(side="left")
@@ -2017,119 +2139,138 @@ class App:
     def _clear_queue(self):
         if self._is_running():
             messagebox.showwarning(APP_NAME,"Stop current download first."); return
-        for w in self.q_frame.winfo_children(): w.destroy()
-        self._row_widgets.clear()
-        self._empty_lbl = tk.Label(self.q_frame,
-            text="No downloads yet. Paste URLs and press Download.",
-            bg=T["BG"], fg=T["MUTED"], font=_f(10))
-        self._empty_lbl.pack(pady=24)
         self._items = []
+        self._build_rows([])
         self.url_box.delete("1.0","end")
 
-    # -- queue cards --------------------------------------------------------
+    # -- queue table --------------------------------------------------------
+    def _set_filter(self, name):
+        """Filter chips above the table (All / Active / Done / Failed)."""
+        self._filter.set(name)
+        for n, b in self._filter_btns.items():
+            sel = (n == name)
+            b.configure(fg=T["ACCENT"] if sel else T["MUTED"],
+                        bg=T["MAROON"] if sel else T["BG"],
+                        font=_f(9,"bold") if sel else _f(9))
+        self._build_rows(self._items)
+
+    def _row_passes(self, item):
+        f = self._filter.get()
+        if f == "All":    return True
+        if f == "Active": return item.status in ("waiting", "downloading", "paused")
+        if f == "Done":   return item.status == "done"
+        if f == "Failed": return item.status in ("error", "cancelled")
+        return True
+
+    def _row_values(self, item):
+        icons = {"waiting":"⏳ Queued", "downloading":"▼ %d%%" % int(item.pct or 0),
+                 "done":"✓ Done", "error":"✗ Failed", "paused":"❚❚ Paused",
+                 "cancelled":"— Cancelled"}
+        name = item.name or item.url
+        if item.status == "done" and item.done_f:
+            name = Path(item.done_f).name
+        return (name[:90],
+                sz(item.size_v) if item.size_v else "-",
+                icons.get(item.status, item.status.capitalize()),
+                spd(item.speed_v) if item.speed_v else "-",
+                eta(item.eta_v) if item.eta_v is not None and item.status == "downloading" else "-")
+
+    def _row_tags(self, item, i):
+        tags = [str(item.id), "even" if i % 2 else "odd"]
+        if item.status == "error": tags.append("err")
+        if item.status == "done":  tags.append("ok")
+        return tuple(tags)
+
     def _build_rows(self, items):
-        for w in self.q_frame.winfo_children(): w.destroy()
+        if not hasattr(self, "q_tree"): return
+        for iid in self.q_tree.get_children(): self.q_tree.delete(iid)
         self._row_widgets.clear()
-        if not items:
-            self._empty_lbl = tk.Label(self.q_frame,
-                text="No downloads yet.", bg=T["BG"], fg=T["MUTED"],
-                font=_f(10))
-            self._empty_lbl.pack(pady=24); return
-        for item in items: self._build_card(item)
-        # Re-apply each item's REAL status: _build_card renders the default ⏳ icon, so any rebuild
-        # (a live-enqueued new download re-lists everything) made FINISHED rows show "waiting" again —
-        # and a done item never gets another item_up event to correct it.
-        for item in items:
-            try: self._update_row(item)
+        shown = [it for it in (items or []) if self._row_passes(it)]
+        for i, item in enumerate(shown):
+            iid = self.q_tree.insert("", "end", values=self._row_values(item),
+                                     tags=self._row_tags(item, i))
+            self._row_widgets[item.id] = iid
+            item.row = iid
+        try:
+            total = len(items or [])
+            self._count_lbl.configure(
+                text=("%d of %d" % (len(shown), total)) if total else "")
+        except Exception: pass
+
+    def _update_row(self, item):
+        iid = self._row_widgets.get(item.id)
+        if not iid or not hasattr(self, "q_tree"): return
+        if not self.q_tree.exists(iid):
+            return self._build_rows(self._items)
+        if not self._row_passes(item):          # filtered out by its new status
+            return self._build_rows(self._items)
+        idx = self.q_tree.index(iid)
+        self.q_tree.item(iid, values=self._row_values(item),
+                         tags=self._row_tags(item, idx))
+        # the buttons that act on a row live in the toolbar now, so they follow
+        # the selection rather than the row
+        self._sync_toolbar()
+
+    def _selected_items(self):
+        ids = set()
+        for iid in (self.q_tree.selection() if hasattr(self, "q_tree") else ()):
+            for tag in self.q_tree.item(iid, "tags"):
+                ids.add(tag)
+        return [it for it in self._items if str(it.id) in ids]
+
+    def _sync_toolbar(self):
+        sel = self._selected_items()
+        live = any(i.status in ("waiting", "downloading") for i in sel)
+        paused = any(i.status == "paused" for i in sel)
+        done = any(i.done_f and Path(i.done_f).exists() for i in sel)
+        for btn, on in ((getattr(self, "_tb_pause", None), live or paused),
+                        (getattr(self, "_tb_cancel", None), live or paused),
+                        (getattr(self, "_tb_folder", None), done),
+                        (getattr(self, "_tb_source", None), bool(sel)),
+                        (getattr(self, "_tb_remove", None), bool(sel))):
+            try:
+                if btn: btn.configure(state="normal" if on else "disabled")
             except Exception: pass
+        try:
+            if getattr(self, "_tb_pause", None):
+                self._tb_pause.configure(text="▶  Resume" if paused and not live
+                                         else "❚❚  Pause")
+        except Exception: pass
 
-    def _build_card(self, item):
-        """One compact rounded row per download.
+    def _queue_menu(self, e):
+        try:
+            iid = self.q_tree.identify_row(e.y)
+            if iid: self.q_tree.selection_set(iid)
+        except Exception: pass
+        m = tk.Menu(self.root, tearoff=0)
+        m.add_command(label="Pause / Resume", command=self._pause_selected)
+        m.add_command(label="Cancel",         command=self._cancel_selected)
+        m.add_separator()
+        m.add_command(label="Show in " + ("Finder" if platform.system()=="Darwin" else "folder"),
+                      command=self._reveal_selected)
+        m.add_command(label="Open source page", command=self._source_selected)
+        m.add_separator()
+        m.add_command(label="Remove from list", command=self._remove_selected)
+        try: m.tk_popup(e.x_root, e.y_root)
+        finally: m.grab_release()
 
-        The previous card was ~90 px tall (two stacked action buttons, a big
-        thumbnail, a full-height progress bar), so barely three downloads fit the
-        window. This one is a single identity line + a thin progress bar, with
-        all four actions in one row — a little over half the height.
-        """
-        panel = RoundedPanel(self.q_frame, radius=12)
-        panel.pack(fill="x", pady=3)
-        card = panel.inner
-        inner = tk.Frame(card, bg=T["SURF"]); inner.pack(fill="x", padx=10, pady=7)
+    def _pause_selected(self):
+        for it in self._selected_items(): self._pause_item(it)
 
-        ico = tk.Label(inner, text="⏳", bg=T["SURF"], fg=T["MUTED"],
-                       font=_f(12), width=2)
-        ico.grid(row=0, column=0, rowspan=2, padx=(0,6))
+    def _cancel_selected(self):
+        for it in self._selected_items():
+            it.stop_mode = "cancel"; it.stop_ev.set()
+            self.log(f"[cancel] {getattr(it,'name',it.url)[:55]}")
 
-        thumb = None
-        if HAS_PIL:
-            thumb = tk.Label(inner, bg=T["SURF2"], width=6, height=2,
-                             text="", relief="flat")
-            thumb.grid(row=0, column=1, rowspan=2, padx=(0,10))
-            threading.Thread(target=self._fetch_thumb,
-                             args=(item, thumb), daemon=True).start()
-            mid_col = 2
-        else:
-            mid_col = 1
+    def _remove_selected(self):
+        for it in list(self._selected_items()): self._remove_item(it)
 
-        mid = tk.Frame(inner, bg=T["SURF"])
-        mid.grid(row=0, column=mid_col, sticky="ew")
-        inner.columnconfigure(mid_col, weight=1)
+    def _reveal_selected(self):
+        sel = self._selected_items()
+        if sel: self._reveal_item(sel[0])
 
-        cat = categorize(item.name)
-        badge = tk.Label(mid, text=f" {item.badge} ", bg=T["MAROON"], fg=T["ACCENT"],
-                         font=_f(7,"bold"), padx=4)
-        badge.pack(side="left", padx=(0,5))
-        cat_badge = tk.Label(mid, text=f" {cat} ", bg=T["SURF2"], fg=T["MUTED"],
-                             font=_f(7), padx=4)
-        cat_badge.pack(side="left", padx=(0,8))
-
-        short = item.name if len(item.name)<=70 else item.name[:67]+"..."
-        name = tk.Label(mid, text=f"[{item.idx}/{item.total}] {short}",
-                        bg=T["SURF"], fg=T["TEXT"], font=_f(10,"bold"), anchor="w")
-        name.pack(side="left", fill="x", expand=True)
-
-        # second line: status text on the left, thin progress on the right
-        line2 = tk.Frame(inner, bg=T["SURF"])
-        line2.grid(row=1, column=mid_col, sticky="ew", pady=(3,0))
-        meta = tk.Label(line2, text="Waiting...", bg=T["SURF"], fg=T["MUTED"],
-                        font=_f(8), anchor="w")
-        meta.pack(side="left")
-        prog = ttk.Progressbar(line2, mode="determinate", maximum=100, length=170)
-        prog.pack(side="right")
-        prog["value"] = item.pct
-
-        # Actions, all four on one line: pause/resume, remove, reveal the file,
-        # reopen the source page.
-        act = tk.Frame(inner, bg=T["SURF"])
-        act.grid(row=0, column=mid_col+1, rowspan=2, padx=(10,0))
-        pbtn = ttk.Button(act, text="⏸", style="Row.TButton",
-                          command=lambda i=item: self._pause_item(i), width=2)
-        if item.status == "paused": pbtn.configure(text="▶")
-        elif item.status not in ("waiting", "downloading"): pbtn.configure(state="disabled")
-        pbtn.pack(side="left", padx=(0,3))
-        fbtn = ttk.Button(act, text="📂", style="Row.TButton",
-                          command=lambda i=item: self._reveal_item(i), width=2)
-        if not (item.done_f and Path(item.done_f).exists()):
-            fbtn.configure(state="disabled")
-        fbtn.pack(side="left", padx=(0,3))
-        sbtn = ttk.Button(act, text="↗", style="Row.TButton",
-                          command=lambda i=item: self._open_source(i), width=2)
-        if not str(item.url or "").startswith("http"):
-            sbtn.configure(state="disabled")
-        sbtn.pack(side="left", padx=(0,3))
-        ttk.Button(act, text="✕", style="Row.TButton",
-                   command=lambda i=item: self._remove_item(i),
-                   width=2).pack(side="left")
-        _tip(fbtn, "Show the file in " + ("Finder" if platform.system()=="Darwin" else "the folder"))
-        _tip(sbtn, "Open the page this came from")
-
-        self._row_widgets[item.id] = {
-            "card":panel,"icon":ico,"name":name,"meta":meta,"prog":prog,"thumb":thumb,
-            "pbtn":pbtn,"fbtn":fbtn,"sbtn":sbtn,
-        }
-        item.row = panel
-        item._lbl_icon = ico; item._lbl_name = name; item._lbl_meta = meta; item._prog = prog
-        item._btn_pause = pbtn; item._btn_folder = fbtn; item._btn_src = sbtn
+    def _source_selected(self):
+        for it in self._selected_items()[:3]: self._open_source(it)
 
     def _fetch_thumb(self, item, label):
         """Async fetch + display thumbnail for queue card. PIL only."""
@@ -2230,52 +2371,16 @@ class App:
             self.log(f"[cancel] {getattr(item,'name',item.url)[:55]}")
             return
         self._items = [i for i in self._items if i.id != item.id]
-        w = self._row_widgets.pop(item.id, None)
-        if w and w["card"].winfo_exists(): w["card"].destroy()
+        iid = self._row_widgets.pop(item.id, None)
+        try:
+            if iid and self.q_tree.exists(iid): self.q_tree.delete(iid)
+        except Exception: pass
         for i, it in enumerate(self._items, 1):
             it.idx = i; it.total = len(self._items)
         # Drop it from the resume queue too, or the next session revives it.
         self.state["queue"] = [q for q in self.state.get("queue", [])
                                if q.get("url") != item.url]
         jsave(STATE_PATH, self.state)
-
-    def _update_row(self, item):
-        if not item.row or not item.row.winfo_exists(): return
-        icons = {
-            "waiting":     ("⏳", T["MUTED"]),
-            "downloading": ("▼",  T["ACCENT"]),
-            "done":        ("✓",  T["GREEN"]),
-            "error":       ("✗",  T["RED"]),
-            "paused":      ("❚❚", T["YELLOW"]),
-            "cancelled":   ("—",  T["MUTED"]),
-        }
-        icon, col = icons.get(item.status, ("⏳", T["MUTED"]))
-        item._lbl_icon.configure(text=icon, fg=col)
-        item._prog["value"] = item.pct
-        # ⏸ ↔ ▶ follows the row's state; dead rows lose the button.
-        pb = getattr(item, "_btn_pause", None)
-        if pb:
-            try:
-                if item.status == "paused":
-                    pb.configure(text="▶", state="normal")
-                elif item.status in ("waiting", "downloading"):
-                    pb.configure(text="⏸", state="normal")
-                else:
-                    pb.configure(state="disabled")
-            except Exception: pass
-        fb = getattr(item, "_btn_folder", None)
-        if fb:
-            try:
-                fb.configure(state="normal" if (item.done_f and Path(item.done_f).exists())
-                             else "disabled")
-            except Exception: pass
-        parts = []
-        if item.size_v:  parts.append(sz(item.size_v))
-        if item.speed_v: parts.append(spd(item.speed_v))
-        if item.eta_v is not None: parts.append(f"ETA {eta(item.eta_v)}")
-        if item.status=="done" and item.done_f:
-            parts = [f"✓ {Path(item.done_f).name}"]
-        item._lbl_meta.configure(text="  ·  ".join(parts) if parts else item.status.capitalize())
 
     # -- speed graph --------------------------------------------------------
     def _draw_graph(self):
@@ -2494,6 +2599,14 @@ class App:
         else:
             url, referer = payload, ""
         self._ext_seen = True
+        # Facebook's reel FEED is /reel/?s=tab — no id, nothing to download.
+        # yt-dlp answers "Unsupported URL", which tells the user nothing.
+        if re.search(r"facebook\.com/(reel|watch|videos)/?(\?|$)", url or "", re.I) \
+           and not re.search(r"(/reel/\d|[?&]v=\d|/videos/\d)", url or ""):
+            self.log("[error] that's the Facebook feed page, not one video — open the "
+                     "reel itself (its own page) and press Download there")
+            self._restore_window()
+            return
         _master = _pinterest_master(url)
         if _master != url:
             self.log("[info] Pinterest: using the master playlist for full quality")

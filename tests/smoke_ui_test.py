@@ -69,6 +69,7 @@ for attr in ("url_box", "btn_dl", "btn_pause", "btn_cancel", "nb", "q_frame", "l
              "ck_var", "sub_var", "thumb_var", "pl_var", "_sched_var", "_sched_lbl",
              "res_frame", "res_lbl", "_pro_btn", "_dot", "_concur_lbl", "hist_tree",
              "_adv_frame", "_act_row", "_log_head", "_log_body", "_log_toggle",
+             "q_tree", "_filter", "_tb_pause", "_tb_folder", "_tb_source",
              "concur_var", "rate_var", "conf_var", "slang_var"):
     ok("App.%s exists" % attr, hasattr(app, attr))
 
@@ -96,9 +97,15 @@ root.update_idletasks()
 check("row updates for every status", lambda: [
     (setattr(item, "status", st), app._update_row(item))
     for st in ("waiting", "downloading", "paused", "done", "error", "cancelled")])
-ok("row keeps its widget refs",
-   all(getattr(item, a, None) is not None
-       for a in ("_lbl_icon", "_lbl_meta", "_prog", "_btn_pause", "_btn_folder", "_btn_src")))
+# the queue is a table now: a row is a Treeview iid, and the actions live in
+# the toolbar and follow the selection
+ok("row is registered in the table", app._row_widgets.get(item.id) is not None)
+ok("row iid is live", app.q_tree.exists(app._row_widgets[item.id]))
+check("filter chips switch the view",
+      lambda: [app._set_filter(f) for f in ("Active", "Done", "Failed", "All")])
+check("toolbar syncs to the selection", app._sync_toolbar)
+check("selection helpers run with nothing selected",
+      lambda: (app._selected_items(), app._reveal_selected(), app._source_selected()))
 check("empty queue renders", lambda: app._build_rows([]))
 
 # ── menu / dialog entry points that touch moved widgets ─────────────────
