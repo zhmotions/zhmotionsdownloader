@@ -87,6 +87,29 @@ web.calls.clear()
 app._open_source(mk("/Users/me/local.mp4"))
 eq("a local file has no source page", web.calls, [])
 
+# ── transcode needs headroom, and says so when it hasn't got it ─────────
+# A 4K60 re-encode wants ~4x the source; on a tight disk keep the original.
+import collections as _c0, shutil as _sh0, tempfile as _tf0
+_du0 = _c0.namedtuple("du", "total used free")
+big = pathlib.Path(_tf0.mkdtemp()) / "clip.mp4"
+big.write_bytes(b"0" * (2 * 1024 * 1024))          # 2 MB stand-in
+
+app = make_app()
+app.cfg = {"premiere": True}
+app._ffprobe_codecs = lambda p: ("vp9", "opus", "yuv420p")
+app._ffprobe_duration = lambda p: 30
+app._pick_hw_encoder = lambda: ("h264_videotoolbox", [])
+app._mq = type("Q", (), {"put": lambda self, x: None})()
+it = mk("https://youtu.be/x", str(big))
+it.idx = it.total = 1
+
+zhd.shutil.disk_usage = lambda p: _du0(1, 1, 100 * 1024**2)      # 100 MB free
+app._force_h264_if_needed(it)
+eq("a tight disk keeps the original file",
+   any("keeping the original" in m for m in app.logs), True)
+eq("and never starts the encoder", any("[transcode]" in m for m in app.logs), False)
+zhd.shutil.disk_usage = _sh0.disk_usage
+
 # ── the update cache does not hoard installers ──────────────────────────
 import tempfile as _tf2
 cache = pathlib.Path(_tf2.mkdtemp())

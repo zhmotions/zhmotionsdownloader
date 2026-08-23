@@ -4592,6 +4592,21 @@ class App:
             # Hardware encoder = 5-10x faster than software libx264.
             # macOS: VideoToolbox (Apple Silicon hw accel)
             # Windows: NVENC (NVIDIA) > QSV (Intel) > AMF (AMD) > libx264
+            # A 4K60 VP9 clip re-encodes to roughly 4x its own size, so a 270 MB
+            # download can want 1.2 GB of scratch. On a tight disk that either
+            # fails halfway or fills the volume — keep the original instead.
+            try:
+                need = max(int(p.stat().st_size * 4.5), 512 * 1024**2)
+                free = shutil.disk_usage(p.parent).free
+            except Exception:
+                need = free = 0
+            if need and free < need:
+                self.log(f"[skip] Premiere MP4 needs about {sz(need)} free to convert "
+                         f"{p.name}, and only {sz(free)} is left — keeping the original "
+                         f"file as it downloaded")
+                self.log("[info] free up space, or switch Premiere MP4 off in Advanced options")
+                return
+
             hw_encoder, hw_args = self._pick_hw_encoder()
             self.log(f"[transcode] {p.name}: {vcodec}/{acodec} → H.264 via {hw_encoder} ({duration:.0f}s)...")
             item.pct = 0
