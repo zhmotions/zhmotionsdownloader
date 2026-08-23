@@ -39,7 +39,7 @@ except ImportError:
 
 # Optional deps (degrade gracefully if missing)
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageChops
     HAS_PIL = True
 except ImportError:
     HAS_PIL = False
@@ -790,6 +790,41 @@ class QueueList(tk.Canvas):
         self.app._queue_menu(e)
 
 
+_LOGO_CACHE = {}
+
+def _mono_logo(px=26, color=None):
+    """The ZH mark, recoloured to a single theme colour.
+
+    The shipped asset is a gold glyph on a dark plate, which fought every
+    palette. Here the glyph is lifted out by luminance, the plate dropped, and
+    the shape refilled with one colour — so it reads the same in Studio, Paper
+    and Console."""
+    color = color or T["ACCENT"]
+    key = (px, color)
+    if key in _LOGO_CACHE: return _LOGO_CACHE[key]
+    if not HAS_PIL: return None
+    try:
+        lp = None
+        for cand in (res_path()/"assets"/"header-logo.png",
+                     Path(__file__).parent/"assets"/"header-logo.png"):
+            if cand.exists(): lp = cand; break
+        if not lp: return None
+        im = Image.open(lp).convert("RGBA")
+        w, h = im.size
+        if w > h * 1.3: im = im.crop((0, 0, h, h))     # wordmark strip → just the mark
+        lum   = im.convert("L")
+        alpha = im.split()[-1]
+        mask  = lum.point(lambda v: 255 if v > 105 else 0).convert("L")
+        mask  = ImageChops.multiply(mask, alpha).resize((px, px), Image.LANCZOS)
+        solid = Image.new("RGBA", (px, px), color)
+        solid.putalpha(mask)
+        img = ImageTk.PhotoImage(solid)
+        _LOGO_CACHE[key] = img                          # keep a ref or Tk drops it
+        return img
+    except Exception:
+        return None
+
+
 class SideNav(tk.Frame):
     """Left sidebar navigation that speaks ttk.Notebook's API.
 
@@ -803,8 +838,15 @@ class SideNav(tk.Frame):
         self._pages, self._buttons = [], []
         self.bar = tk.Frame(self, bg=T["SURF"], width=width)
         self.bar.pack(side="left", fill="y"); self.bar.pack_propagate(False)
-        tk.Label(self.bar, text="Z", bg=T["SURF"], fg=T["ACCENT"],
-                 font=_f(18, "bold"), pady=14).pack(fill="x")
+        mark = _mono_logo(26, T["ACCENT"])
+        if mark is not None:
+            lg = tk.Label(self.bar, image=mark, bg=T["SURF"], pady=14)
+            lg.image = mark
+        else:
+            lg = tk.Label(self.bar, text="Z", bg=T["SURF"], fg=T["ACCENT"],
+                          font=_f(18, "bold"), pady=14)
+        lg.pack(fill="x")
+        _tip(lg, APP_NAME + "  v" + APP_VER)
         tk.Frame(self, bg=T["BORDER"], width=1).pack(side="left", fill="y")
         self.body = tk.Frame(self, bg=T["BG"])
         self.body.pack(side="left", fill="both", expand=True)
@@ -1657,7 +1699,7 @@ class App:
 
     # -- Tab: Downloads -----------------------------------------------------
     def _tab_downloads(self):
-        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="All Downloads", icon="⬇")
+        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="All Downloads", icon="↓")
 
         # Header, two lines: identity + status on top, controls under it. One
         # line could not hold both without clipping the Pro badge.
@@ -1700,6 +1742,13 @@ class App:
         self._adv_lbl.bind("<Button-1>", lambda e: self._toggle_adv())
         self._adv_sum = tk.Label(sub, text="", bg=T["BG"], fg=T["MUTED"], font=_f(8))
         self._adv_sum.pack(side="right", padx=(0,10), pady=(7,0))
+        # Grab from page / Basket / Extension / Clear queue lost their buttons in
+        # the redesign — they live here rather than nowhere.
+        more = tk.Label(sub, text="⋯", bg=T["BG"], fg=T["MUTED"], font=_f(12,"bold"),
+                        cursor="hand2", padx=8)
+        more.pack(side="right", pady=(2,0))
+        more.bind("<Button-1>", self._more_menu)
+        _tip(more, "More actions")
 
         # One line in, one button out.
         paste = tk.Frame(tab, bg=T["BG"]); paste.pack(fill="x", padx=26, pady=(4,10))
@@ -1842,7 +1891,7 @@ class App:
 
     # -- Tab: History -------------------------------------------------------
     def _tab_history(self):
-        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="History", icon="🕘")
+        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="History", icon="⟲")
         top = tk.Frame(tab, bg=T["BG"]); top.pack(fill="x", padx=6, pady=(12,8))
         tk.Label(top, text="Past Downloads", bg=T["BG"], fg=T["ACCENT"],
                  font=_f(12,"bold")).pack(side="left")
@@ -1960,7 +2009,7 @@ class App:
 
     # -- Tab: Stats ---------------------------------------------------------
     def _tab_stats(self):
-        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="Stats", icon="📊")
+        tab = tk.Frame(self.nb.body, bg=T["BG"]); self.nb.add(tab, text="Stats", icon="▤")
         self.stats_tab = tab
         self._build_stats_view()
 
@@ -2428,6 +2477,28 @@ class App:
         if active: bits.append("%d active" % active)
         if failed: bits.append("%d failed" % failed)
         self._count_lbl.configure(text="  ·  ".join(bits))
+
+    def _more_menu(self, e):
+        m = self._build_more_menu()
+        try: m.tk_popup(e.x_root, e.y_root)
+        finally: m.grab_release()
+
+    def _build_more_menu(self):
+        """Everything that has no button of its own in the new window.
+        Built separately from the popup so it can be tested without a mainloop
+        (tk_popup grabs the pointer and never returns headless)."""
+        m = tk.Menu(self.root, tearoff=0)
+        m.add_command(label="Grab links from a page…", command=self._site_grab_dialog)
+        m.add_command(label="Download basket",         command=self._toggle_basket)
+        m.add_command(label="Browser extension…",      command=self._ext_dialog)
+        m.add_separator()
+        m.add_command(label="Open download folder",    command=self._open_folder)
+        m.add_command(label=("Hide log" if getattr(self, "_log_is_open", False) else "Show log"),
+                      command=self._toggle_log)
+        m.add_separator()
+        m.add_command(label="Clear the queue",         command=self._clear_queue)
+        m.add_command(label="Clear the log",           command=self._clear_log)
+        return m
 
     def _queue_menu(self, e):
         m = tk.Menu(self.root, tearoff=0)

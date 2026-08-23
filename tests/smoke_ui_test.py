@@ -123,6 +123,13 @@ check("schedule label updates", lambda: app._sched_var.set("In 1 hour"))
 check("stats view rebuilds", app._build_stats_view)
 check("history view refreshes", app._hist_refresh)
 check("history reveal survives an empty selection", app._hist_reveal)
+menu = app._build_more_menu()
+labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)
+          if menu.type(i) == "command"]
+ok("More menu restores Grab from page", any("Grab links" in l for l in labels))
+ok("More menu restores the basket",     any("basket" in l for l in labels))
+ok("More menu restores the extension",  any("extension" in l for l in labels))
+ok("More menu restores Clear the queue", any("Clear the queue" in l for l in labels))
 check("basket toggles", app._toggle_basket)
 check("basket toggles back", app._toggle_basket)
 
