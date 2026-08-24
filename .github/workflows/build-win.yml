@@ -70,9 +70,26 @@ jobs:
           # /releases/latest/download/ broke when upstream published a release
           # with no binaries attached (v0.16.2), 404ing the whole build. Walk the
           # recent releases and take the newest one that actually ships the exe.
+          # The API answers with an HTML error page often enough to break a
+          # release ("Unicorn!"), so retry, then fall back to a known-good tag.
           $asset = $null
-          $rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/quickjs-ng/quickjs/releases?per_page=15' `
-                                    -Headers @{ 'User-Agent' = 'zh-downloader-ci' }
+          $rels = $null
+          foreach ($try in 1..4) {
+            try {
+              $rels = Invoke-RestMethod -Uri 'https://api.github.com/repos/quickjs-ng/quickjs/releases?per_page=15' `
+                                        -Headers @{ 'User-Agent' = 'zh-downloader-ci' }
+              if ($rels) { break }
+            } catch {
+              Write-Host "quickjs release list attempt $try failed: $($_.Exception.Message)"
+              Start-Sleep -Seconds (5 * $try)
+            }
+          }
+          if (-not $rels) {
+            Write-Host "falling back to the pinned quickjs-ng release"
+            curl.exe -fsSL -o qjs.exe https://github.com/quickjs-ng/quickjs/releases/download/v0.16.1/qjs-windows-x86_64.exe
+            dir qjs.exe
+            exit 0
+          }
           foreach ($r in $rels) {
             $a = $r.assets | Where-Object { $_.name -eq 'qjs-windows-x86_64.exe' } | Select-Object -First 1
             if ($a) { $asset = $a; Write-Host "QuickJS from $($r.tag_name)"; break }
