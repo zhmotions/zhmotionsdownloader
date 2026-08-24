@@ -474,6 +474,15 @@ async function flushWhenReady() {
   } finally { _flushing = false; }
 }
 
+// Heartbeat: the app only learns the extension exists when it receives a ping
+// carrying an extension Origin, and that used to happen solely while the popup
+// was open — so the app kept reporting "not detected". One alarm a minute is
+// enough to keep the app's status honest.
+try {
+  chrome.alarms.create("zh-ping", { periodInMinutes: 1 });
+  chrome.alarms.onAlarm.addListener(a => { if (a.name === "zh-ping") pingApp(); });
+} catch (e) { /* alarms unavailable — popup ping still covers it */ }
+
 async function pingApp() {
   try {
     const r = await fetch("http://127.0.0.1:9613/ping",

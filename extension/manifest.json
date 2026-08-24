@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ZH Downloader",
-  "version": "6.6.10",
+  "version": "6.6.11",
   "description": "Universal download manager \u2014 intercepts downloads, detects media, right-click menu. ZH Motions.",
   "author": "ZH Motions",
   "icons": {
@@ -52,7 +52,8 @@
     "tabs",
     "notifications",
     "webNavigation",
-    "contextMenus"
+    "contextMenus",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>",

@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.30"
+APP_VER     = "6.6.31"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1422,7 +1422,14 @@ class Bridge(BaseHTTPRequestHandler):
             # dialog said "Not detected" even with the extension connected.
             o = self.headers.get("Origin", "") or ""
             if o.startswith(("chrome-extension://", "moz-extension://", "safari-web-extension://")):
-                try: type(self).app._ext_seen = True
+                try:
+                    app = type(self).app
+                    app._ext_seen = True
+                    # Remembered, or every app restart claimed "not detected"
+                    # until the user happened to open the extension popup.
+                    app.cfg["ext_last_seen"] = int(time.time())
+                    app.cfg["ext_origin"] = o
+                    jsave(CFG_PATH, app.cfg)
                 except Exception: pass
             self.send_response(200); self._c()
             self.send_header("Content-Type","application/json"); self.end_headers()
@@ -2502,6 +2509,13 @@ class App:
         if failed: bits.append("%d failed" % failed)
         self._count_lbl.configure(text="  ·  ".join(bits))
 
+    def _ago(self, secs):
+        secs = max(0, int(secs))
+        if secs < 60:   return "%ds" % secs
+        if secs < 3600: return "%dm" % (secs // 60)
+        if secs < 86400:return "%dh" % (secs // 3600)
+        return "%dd" % (secs // 86400)
+
     def _hide_ext_bar(self, remember=False):
         try: self._ext_bar.pack_forget()
         except Exception: pass
@@ -2514,7 +2528,8 @@ class App:
         """Visible only while no browser has ever reached the bridge, and only
         until the user dismisses it."""
         try:
-            if getattr(self, "_ext_seen", False) or self.cfg.get("ext_bar_dismissed"):
+            if getattr(self, "_ext_seen", False) or self.cfg.get("ext_bar_dismissed") \
+               or self.cfg.get("ext_last_seen"):
                 self._hide_ext_bar()
             else:
                 self._ext_bar.pack(fill="x", padx=26, pady=(0,8), before=self.queue)
@@ -3094,10 +3109,17 @@ class App:
         stat_lbl.pack(anchor="w", padx=16, pady=(8, 2))
         def _stat_tick():
             if not w.winfo_exists(): return
-            seen = getattr(self, "_ext_seen", False)
-            stat_lbl.configure(
-                text="Status: " + ("✅ Connected" if seen else "○ Not detected yet — open the extension popup once"),
-                fg=T["GREEN"] if seen else T["MUTED"])
+            live = getattr(self, "_ext_seen", False)
+            last = int(self.cfg.get("ext_last_seen", 0) or 0)
+            if live:
+                txt, col = "Status: ✅ Connected", T["GREEN"]
+            elif last:
+                txt = "Status: ✅ Installed — last seen %s ago" % self._ago(time.time() - last)
+                col = T["GREEN"]
+            else:
+                txt = "Status: ○ Not detected yet — open the extension popup once"
+                col = T["MUTED"]
+            stat_lbl.configure(text=txt, fg=col)
             w.after(1000, _stat_tick)
         _stat_tick()
         fr = tk.Frame(w, bg=T["BG"]); fr.pack(fill="x", padx=16, pady=(10, 4))

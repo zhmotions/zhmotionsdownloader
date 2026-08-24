@@ -123,6 +123,17 @@ left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
 
+# ── the app remembers the extension between restarts ────────────────────
+app = make_app()
+app.cfg = {}
+eq("no memory yet → banner would show", bool(app.cfg.get("ext_last_seen")), False)
+import time as _t
+app.cfg["ext_last_seen"] = int(_t.time()) - 90
+eq("a minute-old sighting reads as minutes", app._ago(_t.time() - app.cfg["ext_last_seen"]), "1m")
+eq("seconds stay seconds", app._ago(30), "30s")
+eq("hours roll up", app._ago(7200), "2h")
+eq("days roll up", app._ago(3 * 86400), "3d")
+
 # ── full disk: refuse to start, and say so ──────────────────────────────
 import collections as _c
 import shutil as _sh
