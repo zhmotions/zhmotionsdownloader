@@ -123,6 +123,28 @@ check("schedule label updates", lambda: app._sched_var.set("In 1 hour"))
 check("stats view rebuilds", app._build_stats_view)
 check("history view refreshes", app._hist_refresh)
 check("history reveal survives an empty selection", app._hist_reveal)
+# the extension has to be reachable without hunting through a menu
+def _texts(w, out=None):
+    out = [] if out is None else out
+    try: out.append(str(w.cget("text")))
+    except Exception: pass
+    for c in w.winfo_children(): _texts(c, out)
+    return out
+
+
+labels = _texts(root)
+ok("header carries an Extension entry", "Extension" in labels)
+ok("Help and About are still there", "Help" in labels and "About" in labels)
+ok("Basket has a visible button", any("Basket" in l for l in labels))
+ok("Grab from page has a visible button", any("Grab from page" in l for l in labels))
+ok("Pause all / Cancel all are visible",
+   any("Pause all" in l for l in labels) and any("Cancel all" in l for l in labels))
+check("setup banner shows while no browser has connected", app._sync_ext_bar)
+ok("banner is packed when the extension is unseen", bool(app._ext_bar.winfo_manager()))
+app._ext_seen = True
+app._sync_ext_bar()
+ok("banner disappears once the browser connects", not app._ext_bar.winfo_manager())
+
 menu = app._build_more_menu()
 labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1)
           if menu.type(i) == "command"]

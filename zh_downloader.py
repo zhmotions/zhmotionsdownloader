@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.29"
+APP_VER     = "6.6.30"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -1719,7 +1719,8 @@ class App:
         self._concur_lbl = tk.Label(head, text="0/0 active", bg=T["BG"], fg=T["MUTED"],
                                     font=_f(8))
         self._concur_lbl.pack(side="right", padx=(0,14), pady=(11,0))
-        for txt, cb in (("About", self._show_about), ("Help", self._show_help)):
+        for txt, cb in (("About", self._show_about), ("Help", self._show_help),
+                        ("Extension", self._ext_dialog)):
             l = tk.Label(head, text=txt, bg=T["BG"], fg=T["MUTED"], font=_f(8),
                          cursor="hand2")
             l.pack(side="right", padx=(0,12), pady=(11,0))
@@ -1732,6 +1733,12 @@ class App:
         self.btn_cancel = ttk.Button(sub, text="✕ Cancel all", style="Ghost.TButton",
                                      command=self._do_cancel, state="disabled")
         self.btn_cancel.pack(side="left", padx=(6,0))
+        # Basket and Grab had ended up behind the "…" menu — both are used often
+        # enough to sit in the open.
+        ttk.Button(sub, text="◎ Basket", style="Ghost.TButton",
+                   command=self._toggle_basket).pack(side="left", padx=(18,0))
+        ttk.Button(sub, text="⤓ Grab from page", style="Ghost.TButton",
+                   command=self._site_grab_dialog).pack(side="left", padx=(6,0))
         self._log_toggle = tk.Label(sub, text="", bg=T["BG"], fg=T["ACCENT"],
                                     font=_f(9,"bold"), cursor="hand2")
         self._log_toggle.pack(side="right", pady=(6,0))
@@ -1851,6 +1858,22 @@ class App:
             _v.trace_add("write", lambda *a: self._adv_summary())
         self._act_row = chips          # the fold packs itself above this
 
+        # Extension banner — shown until the browser has actually talked to the
+        # app once. The redesign had buried the extension behind a "…" menu.
+        self._ext_bar = tk.Frame(tab, bg=T["MAROON"])
+        tk.Label(self._ext_bar, text="🧩", bg=T["MAROON"], fg=T["ACCENT"],
+                 font=_f(12)).pack(side="left", padx=(12,6), pady=8)
+        tk.Label(self._ext_bar,
+                 text="Add the browser extension to download straight from YouTube, "
+                      "Facebook, Pinterest & Artgrid",
+                 bg=T["MAROON"], fg=T["TEXT"], font=_f(9)).pack(side="left", pady=8)
+        _eb = tk.Frame(self._ext_bar, bg=T["MAROON"]); _eb.pack(side="right", padx=10)
+        ttk.Button(_eb, text="Set up", style="Ghost.TButton",
+                   command=self._ext_dialog).pack(side="left", padx=(0,6))
+        tk.Label(_eb, text="✕", bg=T["MAROON"], fg=T["MUTED"], font=_f(9),
+                 cursor="hand2").pack(side="left")
+        _eb.winfo_children()[-1].bind("<Button-1>", lambda e: self._hide_ext_bar(True))
+
         # Resume banner (hidden until an interrupted session is found)
         self.res_frame = tk.Frame(tab, bg=T["MAROON"])
         self.res_lbl   = tk.Label(self.res_frame, text="", bg=T["MAROON"], fg=T["ACCENT"],
@@ -1885,6 +1908,7 @@ class App:
                         ("info",T["ACCENT"]),("dim",T["LOG_FG"])]:
             self.log_txt.tag_configure(tag, foreground=col)
 
+        self._sync_ext_bar()
         self._toggle_adv(bool(self.cfg.get("adv_open", False)))
         self._toggle_log(bool(self.cfg.get("log_open", False)))
         self._set_filter("All")
@@ -2478,6 +2502,24 @@ class App:
         if failed: bits.append("%d failed" % failed)
         self._count_lbl.configure(text="  ·  ".join(bits))
 
+    def _hide_ext_bar(self, remember=False):
+        try: self._ext_bar.pack_forget()
+        except Exception: pass
+        if remember:
+            self.cfg["ext_bar_dismissed"] = True
+            try: jsave(CFG_PATH, self.cfg)
+            except Exception: pass
+
+    def _sync_ext_bar(self):
+        """Visible only while no browser has ever reached the bridge, and only
+        until the user dismisses it."""
+        try:
+            if getattr(self, "_ext_seen", False) or self.cfg.get("ext_bar_dismissed"):
+                self._hide_ext_bar()
+            else:
+                self._ext_bar.pack(fill="x", padx=26, pady=(0,8), before=self.queue)
+        except Exception: pass
+
     def _more_menu(self, e):
         m = self._build_more_menu()
         try: m.tk_popup(e.x_root, e.y_root)
@@ -2858,6 +2900,8 @@ class App:
         else:
             url, referer = payload, ""
         self._ext_seen = True
+        try: self.root.after(0, self._sync_ext_bar)
+        except Exception: pass
         # Facebook's reel FEED is /reel/?s=tab — no id, nothing to download.
         # yt-dlp answers "Unsupported URL", which tells the user nothing.
         if re.search(r"facebook\.com/(reel|watch|videos)/?(\?|$)", url or "", re.I) \
