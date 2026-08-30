@@ -15,6 +15,7 @@ spec = importlib.util.spec_from_file_location("zhd", SRC)
 zhd  = importlib.util.module_from_spec(spec)
 sys.modules["zhd"] = zhd
 spec.loader.exec_module(zhd)
+REAL_JSAVE = zhd.jsave          # kept: the atomic-write test needs the real one
 zhd.jsave = lambda *a, **k: None
 
 fails = passes = 0
@@ -122,6 +123,32 @@ zhd._prune_update_cache()
 left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
+
+# ── settings must survive a crash mid-write ─────────────────────────────
+import json as _json, os as _os, tempfile as _tf3, threading as _th3
+cfgp = pathlib.Path(_tf3.mkdtemp()) / "cfg.json"
+REAL_JSAVE(cfgp, {"theme": "Studio", "n": 1})
+eq("config written", _json.loads(cfgp.read_text())["theme"], "Studio")
+eq("no temp file left behind", (cfgp.parent / (cfgp.name + ".tmp")).exists(), False)
+
+# concurrent writers must never leave a half-file
+def _writer(i):
+    for k in range(40):
+        REAL_JSAVE(cfgp, {"who": i, "k": k, "pad": "x" * 500})
+
+
+ts = [_th3.Thread(target=_writer, args=(i,)) for i in range(6)]
+[t.start() for t in ts]; [t.join() for t in ts]
+try:
+    _json.loads(cfgp.read_text()); ok_json = True
+except Exception:
+    ok_json = False
+eq("six threads writing at once still leaves valid JSON", ok_json, True)
+
+# unicode survives (a Bangla settings value, or a Bangla filename in history)
+REAL_JSAVE(cfgp, {"name": "বাংলা ভিডিও"})
+eq("unicode is written as text, not escapes",
+   _json.loads(cfgp.read_text())["name"], "বাংলা ভিডিও")
 
 # ── one video must not become two rows ──────────────────────────────────
 app = make_app()

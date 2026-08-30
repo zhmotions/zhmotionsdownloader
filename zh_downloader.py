@@ -1056,9 +1056,30 @@ def jload(p, d):
     except: pass
     return d
 
+_JSAVE_LOCK = threading.Lock()
+
 def jsave(p, d):
-    try: Path(p).write_text(json.dumps(d, indent=2))
-    except: pass
+    """Write JSON atomically.
+
+    Settings, state, history and stats were written in place from several
+    threads at once (bridge, workers, UI). A crash or a power cut mid-write —
+    or two writers overlapping — left a half-file, and jload() then silently
+    handed back defaults: settings, license state and history simply gone.
+    Write a sibling temp file, fsync it, then os.replace (atomic on POSIX and
+    on Windows)."""
+    p = Path(p)
+    tmp = p.with_name(p.name + ".tmp")
+    try:
+        with _JSAVE_LOCK:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(d, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, p)
+    except Exception:
+        try: tmp.unlink(missing_ok=True)
+        except Exception: pass
 
 # Hide ffmpeg subprocess console window on Windows
 # (CREATE_NO_WINDOW = 0x08000000, applied to creationflags)
@@ -3100,6 +3121,13 @@ class App:
                     msg,tag = payload
                     self.log_txt.configure(state="normal")
                     self.log_txt.insert("end", msg+("\n" if not msg.endswith("\n") else ""), tag)
+                    # Keep the last 800 lines. A long session used to hold every
+                    # line ever printed in the widget — memory, and a Text that
+                    # gets slower the longer the app stays open.
+                    try:
+                        extra = int(self.log_txt.index("end-1c").split(".")[0]) - 800
+                        if extra > 0: self.log_txt.delete("1.0", "%d.0" % (extra + 1))
+                    except Exception: pass
                     self.log_txt.see("end")
                     self.log_txt.configure(state="disabled")
                 elif kind=="status":
@@ -5253,7 +5281,12 @@ class App:
         if p.suffix and new_name.lower().endswith(p.suffix.lower()):
             new_name = new_name[: -len(p.suffix)]
         new_name = _re.sub(r"\.[A-Za-z0-9]{2,5}$", "", new_name)
-        new_name = _re.sub("[^a-zA-Z0-9 _-]", " ", new_name)
+        # Keep letters in every script — the old ASCII-only filter turned a
+        # Bangla or Arabic title into spaces, so the file kept its UUID name.
+        # Only the characters a path cannot hold are dropped.
+        new_name = _re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", new_name)
+        new_name = "".join(ch for ch in new_name
+                           if ch.isalnum() or ch in " _-()[]." or ord(ch) > 127)
         new_name = _re.sub(" +", " ", new_name).strip()[:60]
         if not new_name or len(new_name) < 3: return
         # Skip rename only if new name == current name (no point)
@@ -6204,6 +6237,26 @@ def _register_url_scheme_windows():
 
 UPD_DIR = Path.home() / ".zhdownloader-updates"
 
+def _prune_caches():
+    """Abandoned .part files and the thumbnail cache were never cleaned; on a
+    machine that already ran out of disk that matters."""
+    now = time.time()
+    try:
+        for f in PARTS_DIR.glob("*.part*"):
+            if now - f.stat().st_mtime > 7 * 86400:      # a week without a resume
+                f.unlink(missing_ok=True)
+    except Exception: pass
+    try:
+        thumbs = sorted(THUMBS_DIR.glob("*.png"), key=lambda f: f.stat().st_mtime)
+        budget = 20 * 1024 * 1024
+        used = sum(f.stat().st_size for f in thumbs)
+        while thumbs and used > budget:
+            f = thumbs.pop(0)
+            used -= f.stat().st_size
+            f.unlink(missing_ok=True)
+    except Exception: pass
+
+
 def _prune_update_cache():
     """Installers we already ran are dead weight — two of them cost 320 MB, which
     is real money on a full disk. Keep anything newer than this build (a pending
@@ -6258,6 +6311,7 @@ def main():
     global HAS_DND
     _pending_update_install()
     _prune_update_cache()
+    _prune_caches()
 
     # Make bundled binaries findable (node for YouTube PoToken, etc)
     _prepend_bundled_bins_to_path()
