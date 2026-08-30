@@ -1240,6 +1240,50 @@ FMTS = {
 }
 
 # -- Download item ----------------------------------------------------------
+def _youtube_id(url):
+    """Video id out of any YouTube URL shape (watch / live / shorts / embed /
+    youtu.be), else ""."""
+    try:
+        sp = urllib.parse.urlsplit(url or "")
+    except Exception:
+        return ""
+    host = (sp.hostname or "").lower().replace("www.", "")
+    if host == "youtu.be":
+        return sp.path.strip("/").split("/")[0][:20]
+    if host not in ("youtube.com", "m.youtube.com", "music.youtube.com"):
+        return ""
+    if sp.path == "/watch":
+        return dict(urllib.parse.parse_qsl(sp.query)).get("v", "")[:20]
+    m = re.match(r"^/(live|shorts|embed|v)/([^/?#]+)", sp.path or "")
+    return m.group(2)[:20] if m else ""
+
+
+def _provisional_name(url):
+    """A name to show before the real title arrives.
+
+    The last path segment alone produced rows called "watch", "index" or a bare
+    id — three YouTube links looked identical in the list."""
+    try:
+        sp = urllib.parse.urlsplit(url or "")
+    except Exception:
+        return (url or "")[:50]
+    host = (sp.hostname or "").replace("www.", "")
+    name = urllib.parse.unquote((sp.path or "").rstrip("/").split("/")[-1] or "")
+    yid = _youtube_id(url)
+    if yid:
+        return "YouTube · %s" % yid
+    if not name or name.lower() in ("watch", "index", "video", "download", "embed",
+                                    "view", "play", "file", "media"):
+        ident = ""
+        for seg in reversed((sp.path or "").strip("/").split("/")):
+            if seg and seg.lower() not in ("watch", "video", "download", "file"):
+                ident = urllib.parse.unquote(seg)[:40]; break
+        if not ident:
+            ident = dict(urllib.parse.parse_qsl(sp.query or "")).get("v", "")[:40]
+        return ("%s · %s" % (host, ident)).strip(" ·") or (url or "")[:50]
+    return name
+
+
 class DL:
     _id = 0
     def __init__(self, url, idx, total, referer=""):
@@ -1250,8 +1294,7 @@ class DL:
         self.idx     = idx
         self.total   = total
         self.badge   = type_badge(url)
-        self.name    = urllib.parse.unquote(
-                           Path(urllib.parse.urlparse(url).path).name or url[:50])[:80]
+        self.name    = _provisional_name(url)[:80]
         self.status  = "waiting"
         self.fk      = None    # per-item quality; None = pool default (self._fk)
         self.stop_ev   = threading.Event()  # per-item stop — pause/cancel ONE row, not the pool
@@ -3108,7 +3151,21 @@ class App:
         path = base.split("?", 1)[0]
         if re.search(r"\.(m3u8|mpd|mp4|ts|m4s|webm|mov|mkv)$", path, re.I):
             return path
-        return base
+        # One video, many URLs: /watch?v=ID&t=54s, /live/ID?si=…, youtu.be/ID and
+        # /shorts/ID are the same thing, and they used to make separate rows.
+        yid = _youtube_id(base)
+        if yid: return "yt:" + yid
+        # Everything else: keep only the params that identify the video. Pexels
+        # sends /download/video/29660252/ and the same URL with ?fps&w&h — that
+        # was landing in the queue twice.
+        try:
+            sp = urllib.parse.urlsplit(base)
+            keep = [(k, v) for k, v in urllib.parse.parse_qsl(sp.query)
+                    if k.lower() in ("v", "id", "video_id", "story_fbid", "pin", "list", "p")]
+            q = urllib.parse.urlencode(sorted(keep))
+            return urllib.parse.urlunsplit((sp.scheme, sp.netloc, sp.path, q, ""))
+        except Exception:
+            return base
 
     def _recv_ext(self, payload):
         """Background receive — no window jump, no bell."""
@@ -3694,11 +3751,15 @@ class App:
         # drag to move · CLICK to add a link (clipboard auto-fill) · double-click restore
         def press(e):
             b._off = (e.x, e.y); b._orig = (e.x_root, e.y_root); b._moved = False
+            b._t0 = time.time()
             self.log("[basket] press")
         def move(e):
             ox, oy = getattr(b, "_off", (37, 37))
             gx, gy = getattr(b, "_orig", (e.x_root, e.y_root))
-            if abs(e.x_root - gx) > 5 or abs(e.y_root - gy) > 5: b._moved = True
+            # 5 px was tighter than a real hand: a click with the slightest
+            # wobble counted as a drag and the popup never opened ("press kaj
+            # kore na"). 12 px, and a quick press still counts as a click.
+            if abs(e.x_root - gx) > 12 or abs(e.y_root - gy) > 12: b._moved = True
             if b._moved:
                 b.geometry(f"+{e.x_root - ox}+{e.y_root - oy}")
         def release(_e):
@@ -3709,8 +3770,13 @@ class App:
             # Plain click (no drag): open the add popup — the basket was drop-only,
             # and a click did NOTHING, which read as "broken". Delayed past the
             # double-click window so restore-window still works.
-            if not getattr(b, "_moved", False):
+            quick = (time.time() - getattr(b, "_t0", 0)) < 0.5
+            gx, gy = getattr(b, "_orig", (0, 0))
+            near = abs(_e.x_root - gx) <= 12 and abs(_e.y_root - gy) <= 12
+            if not getattr(b, "_moved", False) or (quick and near):
                 b._click_job = self.root.after(280, self._basket_click)
+            else:
+                self.log("[basket] moved — position saved")
         def dbl(_e):
             job = getattr(b, "_click_job", None)
             if job:
@@ -3827,7 +3893,19 @@ class App:
                 if qa["win"].winfo_exists():
                     if urls and urls[0]:
                         qa["uvar"].set(urls[0])
-                    qa["win"].lift(); qa["win"].focus_force()
+                    win = qa["win"]
+                    # It can be withdrawn (closed by the X) or parked outside the
+                    # screen after a monitor change — then "refreshed" meant the
+                    # user saw nothing at all.
+                    try:
+                        win.deiconify()
+                        sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+                        if not (0 <= win.winfo_x() <= sw - 100 and 0 <= win.winfo_y() <= sh - 80):
+                            win.geometry("460x250+%d+%d" % (max(8, sw//2 - 230),
+                                                            max(8, sh//2 - 125)))
+                    except Exception: pass
+                    win.attributes("-topmost", True)
+                    win.lift(); win.focus_force()
                     self.log("[basket] popup refreshed with the new link")
                     return
             except Exception:

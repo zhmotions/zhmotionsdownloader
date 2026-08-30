@@ -123,6 +123,30 @@ left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
 
+# ── one video must not become two rows ──────────────────────────────────
+app = make_app()
+same = [("https://www.youtube.com/watch?v=-jgksoAlAkw&t=54s",
+         "https://www.youtube.com/live/-jgksoAlAkw?si=x1KEu56m2lJ0e9-p"),
+        ("https://youtu.be/-jgksoAlAkw", "https://www.youtube.com/shorts/-jgksoAlAkw"),
+        ("https://www.pexels.com/download/video/29660252/",
+         "https://www.pexels.com/download/video/29660252/?fps=30.0&h=1920&w=1080"),
+        ("https://cdn/a/master.m3u8?token=1", "https://cdn/a/master.m3u8?token=2")]
+for a, b in same:
+    eq("same video: %s" % a.split("/")[-1][:28], app._dedup_key(a) == app._dedup_key(b), True)
+eq("different videos stay apart",
+   app._dedup_key("https://www.youtube.com/watch?v=AAA") ==
+   app._dedup_key("https://www.youtube.com/watch?v=BBB"), False)
+
+# ── a row needs a name a human can read ─────────────────────────────────
+eq("a watch URL is not called 'watch'",
+   zhd._provisional_name("https://www.youtube.com/watch?v=-jgksoAlAkw&t=54s"),
+   "YouTube · -jgksoAlAkw")
+eq("youtu.be too", zhd._provisional_name("https://youtu.be/abc123"), "YouTube · abc123")
+eq("a real filename is kept",
+   zhd._provisional_name("https://site/clip_final.mp4"), "clip_final.mp4")
+eq("a bare id keeps its host",
+   zhd._provisional_name("https://vimeo.com/download/"), "vimeo.com")
+
 # ── routing: files must not be sent to the video extractor ──────────────
 # Every one of these came out of the user's log as "no media found".
 for u, want in [
