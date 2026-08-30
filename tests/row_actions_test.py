@@ -123,6 +123,75 @@ left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
 
+# ── routing: files must not be sent to the video extractor ──────────────
+# Every one of these came out of the user's log as "no media found".
+for u, want in [
+    ("https://cdn.x/AEUX_0.8.2.zip?sig=abc", "file"),
+    ("https://www.dropbox.com/scl/fi/x/Play_CavalryCircles.zip?rlkey=1", "file"),
+    ("https://s3.x/original.mp4?response-content-disposition=attachment", "video"),
+    ("https://cdn/x?fileName=pack.rar&response-content-disposition=attachment", "file"),
+    ("https://www.youtube.com/watch?v=abc", "video"),
+    ("https://vimeo.com/56015672", "video"),
+    ("https://site/report.pdf", "file"),
+    ("https://site/clip.mp4", "video"),
+    ("https://site/some/page", "video"),
+]:
+    eq("classify %s" % u[:46], zhd.classify(u), want)
+
+# ── server-supplied filenames ───────────────────────────────────────────
+eq("RFC 5987 filename", zhd._cd_filename("attachment; filename*=UTF-8''July%2E26.mp4"),
+   "July.26.mp4")
+eq("quoted filename", zhd._cd_filename('attachment; filename="July 26.mp4"'), "July 26.mp4")
+eq("no filename", zhd._cd_filename("inline"), "")
+eq("a server name cannot escape the folder", zhd._safe_name("../../etc/passwd"), "passwd")
+eq("illegal characters are dropped", zhd._safe_name('bad:name?.mp4'), "badname.mp4")
+
+# ── fallback decision ───────────────────────────────────────────────────
+app = make_app()
+app.folder_var = type("V", (), {"get": lambda self: "/tmp"})()
+app._referers = {}
+
+
+def _fake_head(ctype="", fname="", total=0):
+    def head(self):
+        self.ctype = ctype
+        return total, False, fname
+    return head
+
+
+_orig_head = zhd.FileDL._head
+zhd.FileDL._head = _fake_head("text/html", "", 1000)
+eq("an html page is not a file", app._downloadable_file("https://site/page"), False)
+zhd.FileDL._head = _fake_head("application/zip", "", 500000)
+eq("a zip is a file", app._downloadable_file("https://site/x"), True)
+zhd.FileDL._head = _fake_head("", "pack.rar", 0)
+eq("a named attachment is a file", app._downloadable_file("https://site/x"), True)
+zhd.FileDL._head = _fake_head("", "", 0)
+eq("no headers at all → don't guess", app._downloadable_file("https://site/x"), False)
+zhd.FileDL._head = _orig_head
+
+# ── cookies for plain file downloads (Cloudflare 403s without them) ─────
+app = make_app()
+app.ck_var = type("V", (), {"get": lambda self: "none"})()
+eq("cookies off → no header", app._cookie_header_for("https://site/x.zip"), "")
+
+app.ck_var = type("V", (), {"get": lambda self: "chrome"})()
+app._cookie_jar_cache = {"chrome": [
+    type("C", (), {"domain": ".site.com", "name": "a", "value": "1"})(),
+    type("C", (), {"domain": "other.com", "name": "b", "value": "2"})(),
+]}
+eq("only this host's cookies are sent",
+   app._cookie_header_for("https://cdn.site.com/x.zip"), "a=1")
+eq("a different host gets nothing",
+   app._cookie_header_for("https://elsewhere.net/x.zip"), "")
+
+hdrs = zhd.FileDL("https://site/x.zip", "/tmp", referer="https://site/page",
+                  cookie="a=1")._headers()
+eq("the file downloader sends a browser UA",
+   "Chrome" in hdrs["User-Agent"], True)
+eq("…the referer", hdrs.get("Referer"), "https://site/page")
+eq("…and the cookies", hdrs.get("Cookie"), "a=1")
+
 # ── the app remembers the extension between restarts ────────────────────
 app = make_app()
 app.cfg = {}

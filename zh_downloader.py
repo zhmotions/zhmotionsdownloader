@@ -5,7 +5,7 @@ categories, speed limit, conflict dialog, completion actions,
 drag-drop URLs, tray icon, card thumbnails.
 """
 
-import os, sys, threading, queue as Q, json, subprocess, shutil, platform
+import os, sys, threading, queue as Q, json, subprocess, shutil, platform, hashlib
 import webbrowser
 from contextlib import nullcontext
 import re, time, urllib.request, urllib.parse, urllib.error
@@ -156,6 +156,16 @@ THEMES = {
         "GREEN":"#34c759","YELLOW":"#ff9f0a","RED":"#ff3b30","BLUE":"#2549e6","PURPLE":"#af52de",
         "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#fbfbfd","LOG_FG":"#48484a",
     },
+    # Fetchleaf — the new brand: leaf greens, gold action, ink text.
+    # (--leaf-050/100/200/600/800, --ink, --gold* from downloader-ui.html)
+    "Fetchleaf": {
+        "BG":"#f3faef","SURF":"#ffffff","SURF2":"#e7f5e0","BORDER":"#a5d698",
+        "ACCENT":"#c9922f","ACCENT2":"#8f6516","MAROON":"#d4f1cb",
+        "TEXT":"#182b17","MUTED":"#3f5b3c",
+        "GREEN":"#388837","YELLOW":"#c9922f","RED":"#b3402e","BLUE":"#2f6fb0","PURPLE":"#6b4fa8",
+        "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#f3faef","LOG_FG":"#3f5b3c",
+        "ON_ACCENT":"#2a1c02", "PLINTH":"#a5d698",
+    },
     # ── the three looks the new window was designed around ────────────────
     # Studio — charcoal with the gold from the ZH logo (default)
     "Studio": {
@@ -275,8 +285,11 @@ def _pick_family(prefs, fallback):
 def UI_FAMILY():
     sysname = platform.system()
     if sysname == "Darwin":
-        return _pick_family([".AppleSystemUIFont", "SF Pro Text", "SF Pro Display",
-                             "Helvetica Neue"], "Helvetica")
+        # Brand type is Outfit / Bricolage Grotesque; neither ships with macOS,
+        # so Inter (installed here, same humanist-geometric feel) comes first and
+        # the system font backs it up.
+        return _pick_family(["Outfit", "Inter", ".AppleSystemUIFont", "SF Pro Text",
+                             "SF Pro Display", "Helvetica Neue"], "Helvetica")
     if sysname == "Windows":
         return _pick_family(["Segoe UI Variable Text", "Segoe UI"], "Segoe UI")
     return _pick_family(["Inter", "Cantarell", "Ubuntu", "DejaVu Sans"], "Helvetica")
@@ -284,7 +297,7 @@ def UI_FAMILY():
 def MONO_FAMILY():
     sysname = platform.system()
     if sysname == "Darwin":
-        return _pick_family(["SF Mono", "Menlo"], "Menlo")
+        return _pick_family(["JetBrains Mono", "SF Mono", "Menlo"], "Menlo")
     if sysname == "Windows":
         return _pick_family(["Cascadia Mono", "Consolas"], "Consolas")
     return _pick_family(["JetBrains Mono", "DejaVu Sans Mono"], "Courier")
@@ -416,7 +429,7 @@ class RoundedButton(tk.Canvas):
         self._state, self._hover = "normal", False
         f = _tkfont.Font(font=self._font)
         w = f.measure(text) + pad[0] * 2
-        h = f.metrics("linespace") + pad[1] * 2
+        h = f.metrics("linespace") + pad[1] * 2 + (4 if T.get("PLINTH") else 0)
         # NB: not self._w/_h — tkinter's Misc already uses self._w for the
         # widget pathname, and shadowing it breaks every later Tk call.
         self._bw, self._bh = w, h
@@ -440,9 +453,16 @@ class RoundedButton(tk.Canvas):
         elif pressed:                 fill, fg = T["ACCENT2"], self._fg
         elif self._hover:             fill, fg = T["ACCENT2"], self._fg
         else:                         fill, fg = self._fill, self._fg
-        self._rrect(1, 1, self._bw - 1, self._bh - 1, self._radius, fill=fill, outline=fill)
-        self.create_text(self._bw / 2, self._bh / 2, text=self._text, fill=fg,
-                         font=self._font)
+        led = T.get("PLINTH") and (T["ACCENT2"] if self._state != "disabled" else T["BORDER"])
+        drop = 4 if led else 0
+        if led and not pressed:
+            self._rrect(1, 1 + drop, self._bw - 1, self._bh - 1, self._radius,
+                        fill=led, outline=led)
+        top = drop if pressed else 0        # pressed = the button sinks onto its ledge
+        self._rrect(1, 1 + top, self._bw - 1, self._bh - 1 - (drop - top),
+                    self._radius, fill=fill, outline=fill)
+        self.create_text(self._bw / 2, (self._bh + top - (drop - top)) / 2,
+                         text=self._text, fill=fg, font=self._font)
 
     # -- events
     def _set_hover(self, on):
@@ -690,8 +710,9 @@ class QueueList(tk.Canvas):
             frac = 1.0 if item.status == "done" else max(0.0, min(1.0, (item.pct or 0)/100))
             if frac > 0:
                 self.create_line(bx1, y2-16, bx1 + (bx2-bx1)*frac, y2-16,
-                                 fill=T["GREEN"] if item.status == "done" else T["ACCENT"],
-                                 width=3, capstyle="round")
+                                 fill=T["GREEN"] if (item.status == "done" or T.get("PLINTH"))
+                                      else T["ACCENT"],
+                                 width=4 if T.get("PLINTH") else 3, capstyle="round")
         # actions
         done_file = bool(item.done_f and Path(item.done_f).exists())
         acts = [("⏸" if item.status != "paused" else "▶", "pause",
@@ -838,7 +859,8 @@ class SideNav(tk.Frame):
         self._pages, self._buttons = [], []
         self.bar = tk.Frame(self, bg=T["SURF"], width=width)
         self.bar.pack(side="left", fill="y"); self.bar.pack_propagate(False)
-        mark = _mono_logo(26, T["ACCENT"])
+        # brand marks are leaf-green; gold is reserved for actions there
+        mark = _mono_logo(26, T["GREEN"] if T.get("PLINTH") else T["ACCENT"])
         if mark is not None:
             lg = tk.Label(self.bar, image=mark, bg=T["SURF"], pady=14)
             lg.image = mark
@@ -886,8 +908,9 @@ class SideNav(tk.Frame):
         for n, (row, lbl) in enumerate(self._buttons):
             sel = (n == i)
             row.configure(bg=T["MAROON"] if sel else T["SURF"])
+            _on = T["GREEN"] if T.get("PLINTH") else T["ACCENT"]
             lbl.configure(bg=T["MAROON"] if sel else T["SURF"],
-                          fg=T["ACCENT"] if sel else T["MUTED"])
+                          fg=_on if sel else T["MUTED"])
         for n, page in enumerate(self._pages):
             if n == i: page.pack(fill="both", expand=True)
             else:      page.pack_forget()
@@ -922,6 +945,14 @@ class RoundedPanel(tk.Frame):
         w, h, r = self.winfo_width(), self.winfo_height(), self._radius
         if w < 4 or h < 4: return
         self._cv.delete("all")
+        # "plinth" — the brand's signature ledge: a solid bar of the border
+        # colour sitting under the card, in place of a CSS drop shadow.
+        led = T.get("PLINTH")
+        if led:
+            d = 5
+            pts = [r,d, w-r,d, w,d, w,r+d, w,h-r, w,h, w-r,h, r,h, 0,h, 0,h-r, 0,r+d, 0,d]
+            self._cv.create_polygon(pts, smooth=True, fill=led, outline=led)
+            h -= d
         pts = [r,0, w-r,0, w,0, w,r, w,h-r, w,h, w-r,h, r,h, 0,h, 0,h-r, 0,r, 0,0]
         self._cv.create_polygon(pts, smooth=True, fill=self._fillc,
                                 outline=self._border)
@@ -1122,12 +1153,38 @@ FE = (".pdf",".zip",".rar",".7z",".exe",".dmg",".pkg",".msi",
 URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.I)
 
 def classify(url):
+    """video | file | None.
+
+    The extension test used to run against the WHOLE url, so anything with a
+    query string ("clip.zip?token=…", "original.mp4?response-content-disposition=
+    attachment") never matched and fell through to "video" — yt-dlp then chewed
+    on a plain file and reported "no media found". Match on the path only, and
+    read the download hints some CDNs put in the query."""
     if not url: return None
-    u = url.strip().lower()
-    if not URL_RE.match(url.strip()): return None
+    raw = url.strip()
+    if not URL_RE.match(raw): return None
+    u = raw.lower()
+    try:
+        parts = urllib.parse.urlsplit(raw)
+        path  = urllib.parse.unquote(parts.path or "").lower()
+        query = urllib.parse.unquote(parts.query or "").lower()
+    except Exception:
+        path, query = u, ""
+    # A real file extension wins over the host list: dropbox.com and drive
+    # serve zips as often as clips, and "…/Play_CavalryCircles.zip" is not a
+    # video just because its host also hosts videos.
+    if any(path.endswith(e) for e in FE): return "file"
+    if any(path.endswith(e) for e in VE): return "video"
     if any(h in u for h in VH): return "video"
-    if any(u.endswith(e) for e in VE): return "video"
-    if any(u.endswith(e) for e in FE): return "file"
+    # S3/Frame.io/Drive style: the real name lives in the query
+    if "attachment" in query or "content-disposition" in query:
+        for e in FE:
+            if e in query: return "file"
+        for e in VE:
+            if e in query: return "video"
+        return "file"
+    for e in FE:                       # ".zip" mid-path, before a trailing slug
+        if e + "/" in path or path.endswith(e): return "file"
     return "video"
 
 def type_badge(url):
@@ -1277,10 +1334,45 @@ class StatsStore:
     def save(self): jsave(self.path, self.data)
 
 # -- Multi-thread file downloader -------------------------------------------
+_EXT_BY_CTYPE = {
+    "video/mp4": ".mp4", "video/webm": ".webm", "video/quicktime": ".mov",
+    "audio/mpeg": ".mp3", "audio/mp4": ".m4a", "application/pdf": ".pdf",
+    "application/zip": ".zip", "application/x-rar-compressed": ".rar",
+    "application/x-7z-compressed": ".7z", "image/jpeg": ".jpg",
+    "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp",
+}
+
+
+def _cd_filename(cd):
+    """Filename out of a Content-Disposition header, RFC 5987 form included —
+    servers send filename*=UTF-8\'\'July%2E26.mp4 and the old split on
+    "filename=" produced junk (or nothing)."""
+    if not cd: return ""
+    m = re.search(r"filename\*\s*=\s*[^\']*\'[^\']*\'([^;]+)", cd, re.I)
+    if m:
+        try: return urllib.parse.unquote(m.group(1).strip().strip("\"\'"))
+        except Exception: pass
+    m = re.search(r"filename\s*=\s*\"([^\"]+)\"", cd, re.I) or \
+        re.search(r"filename\s*=\s*([^;]+)", cd, re.I)
+    return urllib.parse.unquote(m.group(1).strip().strip("\"\'")) if m else ""
+
+
+def _safe_name(name):
+    """Server-supplied names are untrusted: keep the basename, drop separators
+    and control characters, cap the length."""
+    if not name: return ""
+    name = str(name).replace("\\", "/").split("/")[-1]
+    name = re.sub(r"[\x00-\x1f<>:\"|?*]", "", name).strip().strip(".")
+    return name[:150]
+
+
 class FileDL:
     def __init__(self, url, dest, n=THREADS, prog_cb=None, log_cb=None,
-                 cancel_fn=None, rate_limit=0):
+                 cancel_fn=None, rate_limit=0, referer="", cookie=""):
         self.url    = url
+        self.referer = referer
+        self.cookie = cookie
+        self.ctype  = ""
         self.dest   = Path(dest)
         self.n      = n
         self.prog   = prog_cb or (lambda *a: None)
@@ -1292,26 +1384,67 @@ class FileDL:
         self._total = 0
         self._t0    = 0
 
+    UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
+
+    def _headers(self):
+        h = {"User-Agent": self.UA, "Accept": "*/*",
+             "Accept-Language": "en-US,en;q=0.9",
+             # identity, or a gzipped body makes Content-Length disagree with the
+             # bytes on disk and the size check fires on a perfectly good file
+             "Accept-Encoding": "identity"}
+        if getattr(self, "referer", ""):
+            h["Referer"] = self.referer
+        if getattr(self, "cookie", ""):
+            h["Cookie"] = self.cookie
+        return h
+
+    def _probe(self, method="HEAD"):
+        req = urllib.request.Request(self.url, method=method, headers=self._headers())
+        if method == "GET":
+            req.add_header("Range", "bytes=0-0")     # one byte, just for the headers
+        with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
+            hd = r.headers
+            total = int(hd.get("Content-Length", 0) or 0)
+            if method == "GET":
+                cr = hd.get("Content-Range", "")      # "bytes 0-0/12345"
+                if "/" in cr:
+                    try: total = int(cr.rsplit("/", 1)[1])
+                    except Exception: pass
+            res = "bytes" in (hd.get("Accept-Ranges", "") or "")
+            return total, res, _cd_filename(hd.get("Content-Disposition", "")), \
+                   (hd.get("Content-Type", "") or "").split(";")[0].strip().lower()
+
     def _head(self):
-        req = urllib.request.Request(self.url, method="HEAD",
-              headers={"User-Agent":"ZHDownloader/5.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=15, context=SSL_CTX) as r:
-                total = int(r.headers.get("Content-Length",0))
-                res   = "bytes" in r.headers.get("Accept-Ranges","")
-                fname = ""
-                cd = r.headers.get("Content-Disposition","")
-                if "filename=" in cd:
-                    fname = cd.split("filename=")[-1].strip().strip('"\'')
-                return total, res, fname
-        except Exception as e:
-            self.log(f"[warn] HEAD: {e}")
-            return 0, False, ""
+        """Size / range support / server-side filename.
+
+        Sent with a browser User-Agent — the old "ZHDownloader/5.0" was enough
+        for Cloudflare and several CDNs to answer 403. HEAD is refused by some
+        servers (405/501), so a one-byte ranged GET is the fallback."""
+        best = (0, False, "")
+        for method in ("HEAD", "GET"):
+            try:
+                total, res, fname, ctype = self._probe(method)
+                if ctype: self.ctype = ctype
+                best = (max(total, best[0]), res or best[1], fname or best[2])
+                if best[0]:                    # a real size is all we need
+                    return best
+            except Exception as e:
+                if method == "GET" and not best[0]:
+                    self.log(f"[warn] HEAD/GET probe: {e}")
+        return best
 
     def _out(self, srv):
-        if srv: return self.dest / srv
-        n = urllib.parse.unquote(Path(urllib.parse.urlparse(self.url).path).name) or "download"
-        return self.dest / n
+        name = _safe_name(srv) if srv else ""
+        if not name:
+            name = _safe_name(urllib.parse.unquote(
+                Path(urllib.parse.urlparse(self.url).path).name))
+        if not name:
+            name = "download"
+        if "." not in name:                       # give it the type's extension
+            ext = _EXT_BY_CTYPE.get(getattr(self, "ctype", ""), "")
+            if ext: name += ext
+        return self.dest / name
 
     def _throttle(self, n):
         if self.rate_limit <= 0: return
@@ -1331,39 +1464,100 @@ class FileDL:
         self._throttle(n)
 
     def _chunk(self, s, e, part):
-        ex = part.stat().st_size if part.exists() else 0
-        rs = s+ex
-        if ex and rs>e:
-            with self._lock: self._done += ex
-            return
-        h = {"User-Agent":"ZHDownloader/5.0","Range":f"bytes={rs}-{e}"}
-        req = urllib.request.Request(self.url, headers=h)
-        with urllib.request.urlopen(req, timeout=60, context=SSL_CTX) as r:
-            with open(part,"ab") as f:
-                while True:
-                    if self.cancel(): return
-                    c = r.read(65536)
-                    if not c: break
-                    f.write(c); self._tick(len(c))
+        """One byte range into its own part file, resumable and verified.
+
+        Three things were wrong here: the request went out with the old
+        "ZHDownloader/5.0" agent and no cookies (403 from Cloudflare and from any
+        members-only CDN), a dropped connection left a short part that was still
+        concatenated into the final file, and nothing ever retried."""
+        want = e - s + 1
+        for attempt in range(3):
+            ex = part.stat().st_size if part.exists() else 0
+            if ex >= want:
+                if attempt == 0:
+                    with self._lock: self._done += want
+                return
+            h = dict(self._headers()); h["Range"] = f"bytes={s + ex}-{e}"
+            try:
+                req = urllib.request.Request(self.url, headers=h)
+                with urllib.request.urlopen(req, timeout=60, context=SSL_CTX) as r:
+                    if attempt == 0 and ex:
+                        with self._lock: self._done += ex
+                    with open(part, "ab") as f:
+                        while True:
+                            if self.cancel(): return
+                            c = r.read(65536)
+                            if not c: break
+                            f.write(c); self._tick(len(c))
+            except Exception as ex_err:
+                if self.cancel(): return
+                if attempt == 2: raise
+                self.log(f"[retry] part {part.name}: {ex_err}")
+                time.sleep(1.5 * (attempt + 1))
+                continue
+            if self.cancel(): return
+            got = part.stat().st_size if part.exists() else 0
+            if got >= want: return
+            if attempt == 2:
+                raise IOError("range %d-%d came back short (%d of %d bytes)"
+                              % (s, e, got, want))
+            self.log(f"[retry] part {part.name}: short by {want - got} bytes")
 
     def _single(self, out):
         ex = out.stat().st_size if out.exists() else 0
-        h  = {"User-Agent":"ZHDownloader/5.0"}
+        h  = dict(self._headers())
         if ex: h["Range"] = f"bytes={ex}-"
         with self._lock: self._done += ex
         req = urllib.request.Request(self.url, headers=h)
         try:
             with urllib.request.urlopen(req, timeout=60, context=SSL_CTX) as r:
+                # We asked to resume but the server sent the whole file anyway
+                # (200, not 206): appending it would duplicate what we already
+                # have and corrupt the download. Start over instead.
+                mode = "ab"
+                if ex and r.status != 206:
+                    self.log("[info] server ignored the resume request — restarting the file")
+                    with self._lock: self._done -= ex
+                    mode, ex = "wb", 0
                 if not self._total:
                     self._total = int(r.headers.get("Content-Length",0))+ex
-                with open(out,"ab") as f:
+                with open(out, mode) as f:
                     while True:
                         if self.cancel(): return
                         c = r.read(65536)
                         if not c: break
                         f.write(c); self._tick(len(c))
         except urllib.error.HTTPError as e:
+            if e.code in (403, 429, 503, 520, 521, 522):
+                # Cloudflare and friends fingerprint python's TLS and refuse it
+                # while the same URL downloads fine over curl.
+                if self._curl(out): return
             if e.code != 416: raise
+
+    def _curl(self, out):
+        """Last resort: hand the transfer to curl, which gets through the
+        anti-bot layers that block urllib. Resumes whatever is already there."""
+        curl = shutil.which("curl")
+        if not curl: return False
+        self.log("[info] blocked for the built-in downloader — retrying with curl")
+        cmd = [curl, "-L", "--fail", "--silent", "--show-error", "-C", "-",
+               "-A", self.UA, "-o", str(out), self.url]
+        if getattr(self, "referer", ""): cmd[1:1] = ["-e", self.referer]
+        if getattr(self, "cookie", ""):  cmd[1:1] = ["-H", "Cookie: " + self.cookie]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=3600,
+                               **_SUBPROCESS_HIDE)
+        except Exception as e:
+            self.log(f"[warn] curl failed: {e}"); return False
+        if r.returncode != 0:
+            self.log(f"[warn] curl: {(r.stderr or '').strip()[:120]}")
+            return False
+        got = out.stat().st_size if out.exists() else 0
+        if not got: return False
+        with self._lock:
+            self._done = got
+            if not self._total: self._total = got
+        return True
 
     def run(self):
         self._t0 = time.time()
@@ -1375,6 +1569,7 @@ class FileDL:
         if not res or total==0 or self.n==1:
             self._single(out)
         else:
+            self._ranged = True
             chunk = total//self.n
             PARTS_DIR.mkdir(parents=True, exist_ok=True)
             parts = []
@@ -1383,7 +1578,10 @@ class FileDL:
                 for i in range(self.n):
                     s = i*chunk
                     e = (s+chunk-1) if i<self.n-1 else total-1
-                    p = PARTS_DIR/f"{out.stem}.part{i}"
+                    # keyed by URL as well as name: two different downloads
+                    # called "video.mp4" used to share part files
+                    tag = hashlib.md5(self.url.encode()).hexdigest()[:8]
+                    p = PARTS_DIR/f"{out.stem}.{tag}.part{i}"
                     parts.append(p)
                     futs.append(pool.submit(self._chunk,s,e,p))
                 for f in futs: f.result()
@@ -1394,6 +1592,13 @@ class FileDL:
                 for p in parts:
                     if p.exists(): dst.write(p.read_bytes()); p.unlink()
         if self.cancel(): return None
+        # Only the ranged path can be checked byte-for-byte: a server that
+        # gzips the response reports the COMPRESSED length, so comparing it
+        # against the file on disk would fail a perfectly good download.
+        if self._total and getattr(self, "_ranged", False):
+            got = out.stat().st_size if out.exists() else 0
+            if got < self._total:
+                raise IOError("incomplete download: %s of %s" % (sz(got), sz(self._total)))
         self.log(f"[done] {out}")
         return str(out)
 
@@ -4523,6 +4728,8 @@ class App:
             # failing extraction twice before giving up. No file = error, now.
             if not item.done_f and item.status in ("waiting", "downloading") \
                and not self._stop.is_set() and not item.stop_ev.is_set():
+                if self._fallback_to_file(url, out, item, "no video in the page"):
+                    return
                 item.status = "error"
                 self.log(f"[error] no media found at: {url[:70]} — open the actual video/tweet page and try again")
                 self._mq.put(("item_up", item))
@@ -4556,6 +4763,12 @@ class App:
                 elif m == "cancel": item.status = "cancelled"
                 else: item.status = "paused" if self._paused else "cancelled"
             else:
+                _m = str(e).lower()
+                if any(k in _m for k in ("unsupported url", "no video formats",
+                                         "not supported and will not be supported",
+                                         "unable to download webpage", "no media found")) \
+                   and self._fallback_to_file(url, out, item, "yt-dlp could not read it"):
+                    return
                 self.log(f"[error] {e}")
                 hint = _error_hint(str(e), url)
                 if hint: self.log(f"[info] {hint}")
@@ -4979,6 +5192,64 @@ class App:
         except Exception as e:
             self.log(f"[warn] rename failed: {e}")
 
+    def _cookie_header_for(self, url):
+        """Cookies for this host, from the browser chosen in Advanced options.
+
+        Plain file links behind Cloudflare (and members-only CDNs) answer 403 to
+        a cookieless request even though the browser downloads them fine — the
+        log is full of exactly that."""
+        ck = self.ck_var.get() if hasattr(self, "ck_var") else "none"
+        if not ck or ck == "none": return ""
+        try:
+            host = urllib.parse.urlsplit(url).hostname or ""
+            if not host: return ""
+            from yt_dlp.cookies import extract_cookies_from_browser
+            jar = self._cookie_jar_cache.get(ck) if hasattr(self, "_cookie_jar_cache") else None
+            if jar is None:
+                jar = extract_cookies_from_browser(ck)
+                if not hasattr(self, "_cookie_jar_cache"): self._cookie_jar_cache = {}
+                self._cookie_jar_cache[ck] = jar
+            bits = []
+            for c in jar:
+                d = (c.domain or "").lstrip(".")
+                if d and (host == d or host.endswith("." + d)):
+                    bits.append("%s=%s" % (c.name, c.value))
+            return "; ".join(bits[:60])
+        except Exception as e:
+            self.log(f"[warn] could not read {ck} cookies for this file: {e}")
+            return ""
+
+    def _downloadable_file(self, url):
+        """Ask the server what this URL really is.
+
+        yt-dlp answers "Unsupported URL" / "no video formats" / a generic 404 for
+        plenty of links that are simply files (S3 objects, Dropbox zips,
+        aescripts packages). Rather than telling the user "no media found", look
+        at the response headers and hand it to the file downloader when it is a
+        file."""
+        try:
+            dl = FileDL(url, Path(self.folder_var.get()),
+                        referer=self._referers.get(url, "") or "",
+                        cookie=self._cookie_header_for(url))
+            total, _res, fname = dl._head()
+            ctype = getattr(dl, "ctype", "")
+        except Exception:
+            return False
+        if not ctype and not fname and not total:
+            return False
+        if fname:                                  # a named attachment is a file
+            return True
+        return not (ctype.startswith("text/") or ctype in
+                    ("application/xhtml+xml", "application/xml", ""))
+
+    def _fallback_to_file(self, url, out, item, why=""):
+        if not self._downloadable_file(url):
+            return False
+        self.log("[info] %snot a media page — downloading it as a file" %
+                 (why + ": " if why else ""))
+        self._run_file(url, out, item)
+        return bool(item.done_f)
+
     def _run_file(self, url, out, item):
         def prog(p,s,r):
             item.pct=p; item.speed_v=s; item.eta_v=r; item.status="downloading"
@@ -4988,8 +5259,19 @@ class App:
         rate = int(self.cfg.get("rate_kbps",0)) * 1024
         dl = FileDL(url, Path(out), n=THREADS, prog_cb=prog, log_cb=self.log,
                     cancel_fn=lambda: self._stop.is_set() or item.stop_ev.is_set(),
-                    rate_limit=rate)
-        res = dl.run()
+                    rate_limit=rate, referer=self._referers.get(url, "") or "",
+                    cookie=self._cookie_header_for(url))
+        try:
+            res = dl.run()
+        except Exception as e:
+            # File downloads used to surface as a bare exception in the log with
+            # no idea what to do about it.
+            self.log(f"[error] {e}")
+            hint = _error_hint(str(e), url)
+            if hint: self.log(f"[info] {hint}")
+            item.status = "error"
+            self._mq.put(("item_up", item))
+            return
         if item.stop_ev.is_set():
             m = getattr(item, "stop_mode", "")
             item.status = "paused" if m == "pause" else "cancelled"

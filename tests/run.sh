@@ -11,6 +11,9 @@
 #                       root — both bugs here were tkinter attribute shadowing
 #   smoke_ui_test.py    builds the real window (HOME redirected, bridge/tray/network
 #                       stubbed) and calls every callback that reaches for a widget
+#   filedl_test.py      FileDL against a local server that truncates ranges, ignores
+#                       them, or sends odd filenames — the paths that silently
+#                       produced corrupt files
 #   bg.test.js          runs extension/background.js inside a node vm with a
 #                       stubbed chrome API (sniffed-stream persistence across a
 #                       service-worker restart, pending-queue TTL, hand-back of
@@ -39,6 +42,10 @@ python3 "$here/fb_retry_test.py"
 echo
 echo "== queue-row actions + font scaling =="
 python3 "$here/row_actions_test.py"
+
+echo
+echo "== file downloader (local server: ranges, resume, bad names) =="
+python3 "$here/filedl_test.py"
 
 echo
 echo "== whole-UI smoke (real App on a withdrawn root) =="
