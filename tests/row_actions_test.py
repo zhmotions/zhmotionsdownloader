@@ -126,6 +126,35 @@ left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
 
+# ── download options that must not regress ──────────────────────────────
+import queue as _q5, threading as _th5, tempfile as _tf5
+
+
+class _V5:
+    def __init__(self, v): self.v = v
+    def get(self): return self.v
+
+
+opt_app = zhd.App.__new__(zhd.App)
+opt_app.cfg = {"conflict": "rename", "sub_langs": "en"}
+opt_app._referers = {}; opt_app._done_files = []; opt_app._mq = _q5.Queue()
+opt_app._stop = _th5.Event(); opt_app.ff = "/usr/bin/ffmpeg"
+opt_app.ck_var = _V5("none"); opt_app.pl_var = _V5(False)
+opt_app.sub_var = _V5(True); opt_app.thumb_var = _V5(True)
+opt_app.log = lambda *a, **k: None
+_it = mk("https://www.youtube.com/watch?v=x"); _it.stop_ev = _th5.Event()
+o = opt_app._ydl_opts(_tf5.mkdtemp(), "hd", _it, _it.url)
+
+eq("the filename comes from the title, not the path",
+   o["outtmpl"]["default"].endswith("%(title).80s.%(ext)s"), True)
+eq("trim_file_name is NOT set (it renamed files after the whole path)",
+   "trim_file_name" in o, False)
+eq("fragments download in parallel", o.get("concurrent_fragment_downloads"), 8)
+pp = [x["key"] for x in o.get("postprocessors", [])]
+eq("metadata is embedded", "FFmpegMetadata" in pp, True)
+eq("thumbnail is embedded when the box is ticked", "EmbedThumbnail" in pp, True)
+eq("subtitles are embedded when the box is ticked", "FFmpegEmbedSubtitle" in pp, True)
+
 # ── the floating basket must stay reachable ─────────────────────────────
 eq("a position from a wider monitor is pulled back",
    zhd._clamp_to_screen(3200, 100, 1920, 1080), (1846, 100))

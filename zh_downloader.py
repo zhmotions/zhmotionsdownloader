@@ -4751,7 +4751,11 @@ class App:
             },
             "restrictfilenames":          False,
             "windowsfilenames":           False,
-            "trim_file_name":             80,
+            # NB: no trim_file_name here. yt-dlp applies it to the rendered
+            # PATH, not the title: with it set, a download under a long Save-to
+            # folder came out named "-Users-zhmoitons-Desktop-New-Site-…​.mp4",
+            # or with no name at all (".mp4"). The template already caps the
+            # title at 80 characters.
             "noplaylist":                 not self.pl_var.get(),
             "writesubtitles":             self.sub_var.get(),
             "writeautomaticsub":          self.sub_var.get(),
@@ -4806,7 +4810,11 @@ class App:
             "hls_use_mpegts":             True,
             "retries":                    15,
             "fragment_retries":           15,
-            "concurrent_fragment_downloads": 4,
+            # Fragments (HLS/DASH) in parallel. Timed on the same 64 MB stream:
+            # 4 → 27.7s, 8 → 8.8s, 16 → 8.6s. Eight is where it stops paying.
+            # No effect on YouTube, whose formats arrive as HTTP ranges
+            # (measured 20.6s vs 20.7s).
+            "concurrent_fragment_downloads": 8,
             "continuedl":                 True,
             "noprogress":                 False,
             # Clean up intermediate format-specific files after merge
@@ -4843,6 +4851,15 @@ class App:
         if is_hls:
             opts["merge_output_format"] = "mp4"
             opts["final_ext"] = "mp4"
+        # Title, artist and date inside the file — the loose .jpg/.srt written
+        # next to it were easy to lose, and Premiere shows embedded metadata.
+        pps = opts.setdefault("postprocessors", [])
+        pps.append({"key": "FFmpegMetadata", "add_metadata": True})
+        if self.thumb_var.get():
+            pps.append({"key": "EmbedThumbnail", "already_have_thumbnail": True})
+        if self.sub_var.get():
+            pps.append({"key": "FFmpegEmbedSubtitle", "already_have_subtitle": True})
+
         if "audio" in f:
             opts["postprocessors"]=[{"key":"FFmpegExtractAudio",
                                      "preferredcodec":f["audio"],"preferredquality":"0"}]
@@ -4905,7 +4922,11 @@ class App:
             # Sanity check: if YouTube returned error response (tiny file), bail loudly
             if item.done_f and Path(item.done_f).exists():
                 fsize = Path(item.done_f).stat().st_size
-                if fsize < 51200:  # <50 KB = error page, not video
+                # Only YouTube hands back a tiny HTML error page dressed as a
+                # video. Everything else can legitimately be small — a 4 KB
+                # package.json downloaded fine and was reported as a failure.
+                _is_yt = any(h in (url or "").lower() for h in ("youtube.com", "youtu.be"))
+                if _is_yt and fsize < 51200:  # <50 KB = error page, not video
                     self.log(f"[error] download too small ({fsize} bytes) — YouTube blocked or sign-in needed")
                     self.log(f"[error] try: set Cookies dropdown → chrome + login YouTube in Chrome")
                     try: Path(item.done_f).unlink()
@@ -4921,6 +4942,8 @@ class App:
                and not self._stop.is_set() and not item.stop_ev.is_set():
                 if self._fallback_to_file(url, out, item, "no video in the page"):
                     return
+                hint = _error_hint("unsupported url", url)
+                if hint: self.log(f"[info] {hint}")
                 item.status = "error"
                 self.log(f"[error] no media found at: {url[:70]} — open the actual video/tweet page and try again")
                 self._mq.put(("item_up", item))
