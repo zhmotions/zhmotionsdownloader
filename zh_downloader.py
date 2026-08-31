@@ -365,6 +365,20 @@ def _error_hint(msg, url=""):
     return ""
 
 
+def _clamp_to_screen(x, y, sw, sh, size=74):
+    """Keep a floating window on the visible desktop.
+
+    Saved coordinates belong to whatever display was attached last time; after
+    unplugging a monitor or changing resolution the basket was restored
+    off-screen — running, but invisible and unclickable."""
+    try:
+        x = min(max(int(x), 0), max(0, int(sw) - size))
+        y = min(max(int(y), 0), max(0, int(sh) - size))
+        return x, y
+    except Exception:
+        return max(0, int(sw) - 130), 90
+
+
 def _reveal_path(path):
     """Show a file in Finder / Explorer / the Linux file manager, falling back to
     its folder when the file is gone."""
@@ -3674,6 +3688,7 @@ class App:
         from AppKit import NSScreen
         scr = NSScreen.mainScreen().frame()
         tx, ty = self.cfg.get("basket_xy", [int(scr.size.width) - 130, 90])
+        tx, ty = _clamp_to_screen(tx, ty, int(scr.size.width), int(scr.size.height))
         nx, ny = float(tx), float(scr.size.height - ty - 74)
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(nx, ny, 74, 74), NSWindowStyleMaskBorderless,
@@ -3822,8 +3837,12 @@ class App:
         if not getattr(self, "_basket_keeper", False):
             self._basket_keeper = True
             self.root.after(2000, keep_top)
-        sw = b.winfo_screenwidth()
+        sw, sh = b.winfo_screenwidth(), b.winfo_screenheight()
         x, y = self.cfg.get("basket_xy", [sw - 130, 90])
+        # Saved coordinates come from whatever display was attached last time.
+        # Unplug the second monitor (or change resolution) and the basket used
+        # to be restored off-screen: alive, undraggable, invisible.
+        x, y = _clamp_to_screen(x, y, sw, sh)
         b.geometry(f"74x74+{int(x)}+{int(y)}")
         b.configure(bg=T["ACCENT"])
         lbl = tk.Label(b, text="⬇", bg=T["ACCENT"], fg="#0a0606", font=_f(30, "bold"))
@@ -4175,7 +4194,12 @@ class App:
         if not key: return
         def run():
             ok, plan, _ = license_verify(key)
-            if ok is None: return
+            if ok is None:
+                # Server unreachable (offline, DNS, Cloudflare hiccup). Keep the
+                # last known state — a network blip must not lock a paid user
+                # out of the app.
+                self.log("[license] could not reach the server — keeping the saved activation")
+                return
             self.lic.update({"valid":bool(ok), "plan":plan or "free", "checked":time.time()})
             self._save_license()
             try: self.root.after(0, self._refresh_pro_badge)

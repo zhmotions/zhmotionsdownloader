@@ -126,6 +126,14 @@ left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
 
+# ── the floating basket must stay reachable ─────────────────────────────
+eq("a position from a wider monitor is pulled back",
+   zhd._clamp_to_screen(3200, 100, 1920, 1080), (1846, 100))
+eq("negative coordinates are pulled back", zhd._clamp_to_screen(-40, -90, 1920, 1080), (0, 0))
+eq("a valid position is left alone", zhd._clamp_to_screen(1500, 400, 1920, 1080), (1500, 400))
+eq("garbage falls back to the default corner",
+   zhd._clamp_to_screen("x", None, 1920, 1080), (1790, 90))
+
 # ── two downloads finishing together must both be counted ───────────────
 import tempfile as _tf_st, threading as _th_st
 st = zhd.StatsStore.__new__(zhd.StatsStore)
