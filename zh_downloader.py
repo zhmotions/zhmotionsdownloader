@@ -676,7 +676,8 @@ class QueueList(tk.Canvas):
             except Exception: pass
         # status dot + title
         dot = {"done": T["GREEN"], "downloading": T["ACCENT"], "paused": T["YELLOW"],
-               "error": T["RED"], "cancelled": T["MUTED"]}.get(item.status, T["MUTED"])
+               "stopping": T["YELLOW"], "error": T["RED"],
+               "cancelled": T["MUTED"]}.get(item.status, T["MUTED"])
         cx = x1 + 104
         self.create_oval(cx, y1+20, cx+8, y1+28, fill=dot, outline="")
         name = item.name or item.url
@@ -689,7 +690,8 @@ class QueueList(tk.Canvas):
             host = (item.url or "").split("/")[2].replace("www.", "")
         except Exception: pass
         state = {"done": "Completed", "waiting": "Waiting", "paused": "Paused",
-                 "cancelled": "Cancelled", "error": "Failed"}.get(item.status, "")
+                 "stopping": "Stopping…", "cancelled": "Cancelled",
+                 "error": "Failed"}.get(item.status, "")
         if item.status == "downloading":
             bits = [b for b in (spd(item.speed_v) if item.speed_v else "",
                                 (eta(item.eta_v) + " left") if item.eta_v is not None else "")
@@ -1421,12 +1423,21 @@ def _cd_filename(cd):
     return urllib.parse.unquote(m.group(1).strip().strip("\"\'")) if m else ""
 
 
+_WIN_RESERVED = {"con", "prn", "aux", "nul", "clock$"} | \
+                {"com%d" % i for i in range(1, 10)} | {"lpt%d" % i for i in range(1, 10)}
+
+
 def _safe_name(name):
     """Server-supplied names are untrusted: keep the basename, drop separators
-    and control characters, cap the length."""
+    and control characters, dodge the Windows reserved device names (a file
+    called CON.mp4 or NUL.zip cannot be created), cap the length."""
     if not name: return ""
     name = str(name).replace("\\", "/").split("/")[-1]
-    name = re.sub(r"[\x00-\x1f<>:\"|?*]", "", name).strip().strip(".")
+    name = re.sub(r"[\x00-\x1f<>:\"|?*]", "", name).strip().strip(". ")
+    if not name: return ""
+    stem, dot, ext = name.partition(".")
+    if stem.lower() in _WIN_RESERVED:
+        name = "_" + name
     return name[:150]
 
 
@@ -2726,7 +2737,7 @@ class App:
 
     def _row_passes(self, item):
         f = self._filter.get() if hasattr(self, "_filter") else "All"
-        if f == "Active": return item.status in ("waiting", "downloading", "paused")
+        if f == "Active": return item.status in ("waiting", "downloading", "paused", "stopping")
         if f == "Done":   return item.status == "done"
         if f == "Failed": return item.status in ("error", "cancelled")
         return True
@@ -2844,8 +2855,11 @@ class App:
 
     def _cancel_selected(self):
         for it in self._selected_items():
+            if it.status in ("done", "error", "cancelled"): continue
             it.stop_mode = "cancel"; it.stop_ev.set()
-            self.log(f"[cancel] {getattr(it,'name',it.url)[:55]}")
+            it.status = "stopping"
+            self._mq.put(("item_up", it))
+            self.log(f"[cancel] {getattr(it,'name',it.url)[:55]} — stopping at the next chunk")
 
     def _remove_selected(self):
         for it in list(self._selected_items()): self._remove_item(it)
@@ -2911,7 +2925,10 @@ class App:
     def _pause_item(self, item):
         if item.status in ("downloading", "waiting"):
             item.stop_mode = "pause"; item.stop_ev.set()
-            item.status = "paused" if item.status == "waiting" else item.status
+            # yt-dlp can be minutes into extraction, where our progress hook is
+            # never called, so the row kept showing "Starting…" and the user
+            # clicked pause/cancel over and over. Say what is happening.
+            item.status = "paused" if item.status == "waiting" else "stopping"
             self._mq.put(("item_up", item))
             self.log(f"[pause] {getattr(item,'name',item.url)[:55]}")
         elif item.status == "paused":
@@ -4511,6 +4528,15 @@ class App:
     def _resolve_conflict(self, target):
         """Return final target path or None to skip."""
         p = Path(target)
+        # Windows refuses paths over 260 characters unless long-path support is
+        # on, and a long video title plus a deep Save-to folder gets there
+        # easily — the download finished and the rename then threw.
+        try:
+            limit = 250 if os.name == "nt" else 400
+            if len(str(p)) > limit:
+                keep = max(8, limit - len(str(p.parent)) - len(p.suffix) - 2)
+                p = p.parent / (p.stem[:keep].strip() + p.suffix)
+        except Exception: pass
         if not p.exists(): return p
         policy = self.cfg.get("conflict","rename")
         if policy == "overwrite": return p
@@ -5101,7 +5127,7 @@ class App:
             for line in proc.stderr:
                 tail.append(line)
                 if len(tail) > 40: tail = tail[-40:]
-                if self._stop.is_set():
+                if self._stop.is_set() or item.stop_ev.is_set():
                     proc.terminate(); break
                 # ffmpeg -progress output: key=value lines, "out_time_us=12345"
                 if line.startswith("out_time_us="):

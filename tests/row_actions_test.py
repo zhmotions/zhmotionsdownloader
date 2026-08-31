@@ -6,6 +6,8 @@ buttons added to every card, plus the font helpers behind the Text size setting.
 """
 import importlib.util
 import pathlib
+import queue
+import threading
 import sys
 import tempfile
 
@@ -123,6 +125,38 @@ zhd._prune_update_cache()
 left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
+
+# ── names Windows cannot take ───────────────────────────────────────────
+eq("a reserved device name is escaped", zhd._safe_name("CON.mp4"), "_CON.mp4")
+eq("…in any case", zhd._safe_name("nul.zip"), "_nul.zip")
+eq("com9 too", zhd._safe_name("COM9.mov"), "_COM9.mov")
+eq("a normal name is untouched", zhd._safe_name("console.mp4"), "console.mp4")
+eq("trailing dots and spaces go", zhd._safe_name("clip. "), "clip")
+
+# ── a very long name must not break the rename ──────────────────────────
+app = make_app()
+app.cfg = {"conflict": "rename"}
+deep = pathlib.Path("/tmp/" + "d" * 60)
+long_target = deep / ("t" * 300 + ".mp4")
+out = app._resolve_conflict(long_target)
+eq("the path is trimmed to something the OS accepts", len(str(out)) <= 400, True)
+eq("…keeping the extension", out.suffix, ".mp4")
+
+# ── cancelling mid-extraction shows a state, not silence ────────────────
+app = make_app()
+app._mq = queue.Queue()
+app.queue = type("Q", (), {"selection": lambda self: [], "redraw": lambda self: None})()
+it = mk("https://youtu.be/x"); it.status = "downloading"
+it.stop_ev = threading.Event()
+app.queue.selection = lambda: [it]
+app._selected_items = lambda: [it]
+app._cancel_selected()
+eq("the row reports that it is stopping", it.status, "stopping")
+eq("and the worker is told", it.stop_ev.is_set(), True)
+it2 = mk("https://youtu.be/y"); it2.status = "done"; it2.stop_ev = threading.Event()
+app._selected_items = lambda: [it2]
+app._cancel_selected()
+eq("a finished row is left alone", it2.status, "done")
 
 # ── settings must survive a crash mid-write ─────────────────────────────
 import json as _json, os as _os, tempfile as _tf3, threading as _th3
