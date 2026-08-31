@@ -126,6 +126,52 @@ left = sorted(f.name for f in cache.iterdir())
 eq("installers already applied are deleted", left,
    ["ZHDownloader-9.9.9.pkg", "notes.txt"])
 
+# ── two downloads finishing together must both be counted ───────────────
+import tempfile as _tf_st, threading as _th_st
+st = zhd.StatsStore.__new__(zhd.StatsStore)
+st.path = pathlib.Path(_tf_st.mkdtemp()) / "stats.json"
+st.data = {"total_files": 0, "total_bytes": 0, "total_time": 0,
+           "by_category": {}, "by_day": {}, "max_speed": 0, "sessions": 0}
+st.save = lambda: None
+
+
+def _fin(i):
+    it = mk("https://site/%d.mp4" % i)
+    it.size_v, it.start_t, it.end_t, it.speed_v = 1000, 1.0, 2.0, 10
+    it.done_f = "/tmp/%d.mp4" % i
+    for _ in range(50):
+        st.record(it)
+
+
+ts2 = [_th_st.Thread(target=_fin, args=(i,)) for i in range(4)]
+[t.start() for t in ts2]; [t.join() for t in ts2]
+eq("no finish is lost to a race", st.data["total_files"], 200)
+eq("bytes add up too", st.data["total_bytes"], 200 * 1000)
+
+# ── a broken settings file is quarantined, not re-read forever ──────────
+import tempfile as _tf4
+badp = pathlib.Path(_tf4.mkdtemp()) / "cfg.json"
+badp.write_text('{"half": "written"')          # truncated, as a crash would leave it
+got = zhd.jload(badp, {"theme": "Studio"})
+eq("a corrupt file falls back to defaults", got, {"theme": "Studio"})
+eq("…and is moved out of the way", badp.exists(), False)
+eq("…kept for inspection",
+   any(f.name.startswith("cfg.json.corrupt-") for f in badp.parent.iterdir()), True)
+good = badp.parent / "ok.json"
+REAL_JSAVE(good, {"a": 1})
+eq("a good file is read normally", zhd.jload(good, {}), {"a": 1})
+
+# ── session maps must not grow forever ──────────────────────────────────
+app = make_app()
+app._referers = {"u%d" % i: "r" for i in range(500)}
+app._ext_titles = {"u%d" % i: "t" for i in range(500)}
+app._heal_tries = {"u%d" % i: 1 for i in range(300)}
+app._trim_session_maps()
+eq("referers trimmed", len(app._referers) <= 400, True)
+eq("titles trimmed", len(app._ext_titles) <= 400, True)
+eq("heal counters trimmed", len(app._heal_tries) <= 200, True)
+eq("the newest entries survive", "u499" in app._referers, True)
+
 # ── names Windows cannot take ───────────────────────────────────────────
 eq("a reserved device name is escaped", zhd._safe_name("CON.mp4"), "_CON.mp4")
 eq("…in any case", zhd._safe_name("nul.zip"), "_nul.zip")

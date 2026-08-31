@@ -1053,9 +1053,20 @@ def site_folder(url, referer=""):
 
 # -- Helpers ----------------------------------------------------------------
 def jload(p, d):
+    """Read JSON, and quarantine the file if it is broken.
+
+    A half-written file (pre-atomic-write versions, a full disk, a crash) used
+    to fall back to defaults on EVERY launch while the bad bytes stayed on disk
+    — settings looked "reset" forever and there was nothing to look at. Now the
+    wreck is renamed .corrupt-<stamp> so it can be inspected, and the next save
+    starts clean."""
+    p = Path(p)
     try:
-        if Path(p).exists(): return json.loads(Path(p).read_text())
-    except: pass
+        if p.exists(): return json.loads(p.read_text())
+    except Exception:
+        try:
+            p.rename(p.with_name(p.name + ".corrupt-" + time.strftime("%Y%m%d-%H%M%S")))
+        except Exception: pass
     return d
 
 _JSAVE_LOCK = threading.Lock()
@@ -1345,23 +1356,26 @@ class DL:
 
 # -- History store ----------------------------------------------------------
 class HistoryStore:
+    _lock = threading.Lock()
+
     def __init__(self, path=HIST_PATH):
         self.path = path
         self.data = jload(path, {"items":[]})
     def add(self, item):
-        rec = {
-            "name":     Path(item.done_f).name if item.done_f else item.name,
-            "path":     item.done_f or "",
-            "url":      item.url,
-            "size":     item.size_v,
-            "status":   item.status,
-            "category": categorize(item.done_f or item.name),
-            "ts":       now_iso(),
-        }
-        self.data.setdefault("items",[]).insert(0, rec)
-        self.data["items"] = self.data["items"][:MAX_HISTORY]
-        jsave(self.path, self.data)
-        return rec
+        with self._lock:
+            rec = {
+                "name":     Path(item.done_f).name if item.done_f else item.name,
+                "path":     item.done_f or "",
+                "url":      item.url,
+                "size":     item.size_v,
+                "status":   item.status,
+                "category": categorize(item.done_f or item.name),
+                "ts":       now_iso(),
+            }
+            self.data.setdefault("items",[]).insert(0, rec)
+            self.data["items"] = self.data["items"][:MAX_HISTORY]
+            jsave(self.path, self.data)
+            return rec
     def clear(self):
         self.data = {"items":[]}
         jsave(self.path, self.data)
@@ -1373,6 +1387,11 @@ class HistoryStore:
 
 # -- Stats store ------------------------------------------------------------
 class StatsStore:
+    # record() is a read-modify-write called from download workers; without a
+    # lock two finishes landing together lose a count (and can interleave with
+    # the reset in Settings).
+    _lock = threading.Lock()
+
     def __init__(self, path=STATS_PATH):
         self.path = path
         self.data = jload(path, {
@@ -1382,21 +1401,22 @@ class StatsStore:
         self.data["sessions"] = self.data.get("sessions",0) + 1
         self.save()
     def record(self, item):
-        d = self.data
-        d["total_files"]  = d.get("total_files",0) + 1
-        d["total_bytes"]  = d.get("total_bytes",0) + (item.size_v or 0)
-        dur = max(0, item.end_t - item.start_t) if item.end_t and item.start_t else 0
-        d["total_time"]   = d.get("total_time",0) + dur
-        cat = categorize(item.done_f or item.name)
-        d.setdefault("by_category",{})
-        d["by_category"][cat] = d["by_category"].get(cat,0) + 1
-        import datetime
-        day = datetime.date.today().isoformat()
-        d.setdefault("by_day",{})
-        d["by_day"][day] = d["by_day"].get(day,0) + (item.size_v or 0)
-        if item.speed_v and item.speed_v > d.get("max_speed",0):
-            d["max_speed"] = item.speed_v
-        self.save()
+        with self._lock:
+            d = self.data
+            d["total_files"]  = d.get("total_files",0) + 1
+            d["total_bytes"]  = d.get("total_bytes",0) + (item.size_v or 0)
+            dur = max(0, item.end_t - item.start_t) if item.end_t and item.start_t else 0
+            d["total_time"]   = d.get("total_time",0) + dur
+            cat = categorize(item.done_f or item.name)
+            d.setdefault("by_category",{})
+            d["by_category"][cat] = d["by_category"].get(cat,0) + 1
+            import datetime
+            day = datetime.date.today().isoformat()
+            d.setdefault("by_day",{})
+            d["by_day"][day] = d["by_day"].get(day,0) + (item.size_v or 0)
+            if item.speed_v and item.speed_v > d.get("max_speed",0):
+                d["max_speed"] = item.speed_v
+            self.save()
     def save(self): jsave(self.path, self.data)
 
 # -- Multi-thread file downloader -------------------------------------------
@@ -1731,13 +1751,17 @@ class Bridge(BaseHTTPRequestHandler):
             self.send_response(403); self._c(); self.end_headers()
             self.wfile.write(b'{"ok":false,"err":"forbidden"}'); return
         try:
-            n = int(self.headers.get("Content-Length","0"))
+            # Anything local can POST here; don't let a bad or hostile caller
+            # make us allocate an arbitrary buffer.
+            n = min(int(self.headers.get("Content-Length", "0") or 0), 64 * 1024)
             d = json.loads(self.rfile.read(n) or b"{}")
-        except: d={}
-        url     = (d.get("url")     or "").strip()
-        referer = (d.get("referer") or "").strip()
-        fmt     = (d.get("fmt")     or "").strip()   # optional quality from the video overlay
-        title   = (d.get("title")   or "").strip()   # page title — names sniffed raw streams
+            if not isinstance(d, dict): d = {}
+        except Exception:
+            d = {}
+        url     = (str(d.get("url")     or "").strip())[:2000]
+        referer = (str(d.get("referer") or "").strip())[:2000]
+        fmt     = (str(d.get("fmt")     or "").strip())[:20]    # quality from the overlay
+        title   = (str(d.get("title")   or "").strip())[:300]   # page title for raw streams
         if not url:
             self.send_response(400); self._c(); self.end_headers()
             self.wfile.write(b'{"ok":false}'); return
@@ -3186,6 +3210,16 @@ class App:
         except Q.Empty: pass
         self.root.after(80, self._poll)
 
+    def _trim_session_maps(self):
+        """_referers / _ext_titles / _heal_tries collected an entry per link and
+        were never pruned — a long session (the app is meant to stay open) just
+        kept growing."""
+        for name, cap in (("_referers", 400), ("_ext_titles", 400), ("_heal_tries", 200)):
+            m = getattr(self, name, None)
+            if isinstance(m, dict) and len(m) > cap:
+                keep = list(m.items())[-cap // 2:]
+                setattr(self, name, dict(keep))
+
     def _dedup_key(self, u):
         """Identity for dedup. Raw CDN streams (.m3u8/.mp4/.ts…) carry rotating
         signed tokens in the query → strip it. Page/extractor URLs put the video
@@ -3285,6 +3319,7 @@ class App:
             self.fmt_var.set(f"{fmt}: {FMTS[fmt]['label']}")
             self.log(f"[bridge] quality: {FMTS[fmt]['label']} (this download only)")
         if referer: self._referers[url] = referer
+        self._trim_session_maps()
         # Page title from the extension — used to name sniffed raw streams
         # (Artlist/Pinterest m3u8) that carry no metadata title of their own.
         if title: self._ext_titles[url] = title
