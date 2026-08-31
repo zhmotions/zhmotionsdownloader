@@ -324,7 +324,7 @@ def _def_theme_name():
     # Graphite everywhere now: near-neutral, so the only colour on screen is the
     # primary button and a row's status. Carbon (dark) and macOS (blue) stay as
     # choices in Settings.
-    return "Studio"
+    return "Fetchleaf"      # the brand palette is the default now
 
 def _pinterest_master(url):
     """Pinterest HLS: turn a single-quality variant into the master playlist.
@@ -1914,7 +1914,7 @@ class App:
         """Theme switch requires restart for full restyle. ttk re-config helps minimally."""
         s = ttk.Style()
         self._config_styles(s)
-        messagebox.showinfo(APP_NAME, "Theme will fully apply after restart.")
+        self._notice("Theme will fully apply after you restart the app.", "Theme")
 
     def _config_styles(self, s):
         try: s.theme_use("clam")
@@ -2306,7 +2306,7 @@ class App:
     def _hist_open(self, _e):
         p = self._hist_sel_path()
         if not p or not Path(p).exists():
-            messagebox.showinfo(APP_NAME,"File not found on disk."); return
+            self._notice("That file is not on disk any more.", "Missing file", "warn"); return
         if   platform.system()=="Darwin":  subprocess.run(["open", p])
         elif platform.system()=="Windows": os.startfile(p)
         else:                              subprocess.run(["xdg-open", p])
@@ -2620,7 +2620,7 @@ class App:
         new size lands on the next launch."""
         if name == self.cfg.get("text_size"): return
         self._save_setting("text_size", name)
-        messagebox.showinfo(APP_NAME, "Text size will apply after you restart the app.")
+        self._notice("Text size will apply after you restart the app.", "Text size")
 
     # -- res ----------------------------------------------------------------
     def _r(self, n):
@@ -2757,7 +2757,7 @@ class App:
 
     def _clear_queue(self):
         if self._is_running():
-            messagebox.showwarning(APP_NAME,"Stop current download first."); return
+            self._notice("Stop the current download first.", "Still downloading", "warn"); return
         self._items = []
         self._build_rows([])
         self.url_box.delete("1.0","end")
@@ -3572,7 +3572,7 @@ class App:
         def go():
             picked = [e["url"] for e, v in zip(entries, vars_) if v.get() and e["url"]]
             if not picked:
-                messagebox.showwarning(APP_NAME, "Nothing selected."); return
+                self._notice("Nothing is selected.", "Nothing to do", "warn"); return
             kf = qv.get().split(":")[0].strip()
             if kf not in FMTS: kf = fk
             if not self.is_pro() and len(picked) > 1:
@@ -4064,7 +4064,7 @@ class App:
         def apply_common():
             final = _final_urls()
             if not final:
-                messagebox.showwarning(APP_NAME, "Paste a valid link first.", parent=w)
+                self._notice("Paste a valid link first.", "No link", "warn", parent=w)
                 return False
             self.fmt_var.set(qv.get()); self.sub_var.set(sv.get())
             cur_txt = self._url_text().strip()
@@ -4296,9 +4296,9 @@ class App:
                     self.url_box.delete("1.0","end")
                     self.url_box.insert("1.0", clip)
                 else:
-                    messagebox.showwarning(APP_NAME,"Paste at least one valid URL."); return
+                    self._notice("Paste at least one link to download.", "No links", "warn"); return
             except:
-                messagebox.showwarning(APP_NAME,"Paste at least one valid URL."); return
+                self._notice("Paste at least one link to download.", "No links", "warn"); return
 
         # Pool already running (basket "Download now", stray Start): live-enqueue
         # instead of rebuilding. _do_start mid-run orphaned in-flight workers —
@@ -6164,19 +6164,91 @@ class App:
         except Exception as e:
             print(f"[ytdlp-update] {e}", file=sys.stderr)
 
+    def _notice(self, text, title="", kind="info", parent=None):
+        """A short message in the app's colours.
+
+        messagebox.showinfo/showwarning draw the OS dialog, which ignores the
+        theme — jarring next to a window that is otherwise all one palette."""
+        try:
+            w = tk.Toplevel(parent or self.root)
+        except Exception:
+            return messagebox.showinfo(APP_NAME, text)
+        w.title(title or APP_NAME); w.configure(bg=T["BG"]); w.resizable(False, False)
+        try: w.transient(parent or self.root)
+        except Exception: pass
+        card = RoundedPanel(w, radius=14)
+        card.pack(fill="both", expand=True, padx=14, pady=14)
+        body = tk.Frame(card.inner, bg=T["SURF"]); body.pack(fill="both", expand=True,
+                                                             padx=16, pady=14)
+        head = tk.Frame(body, bg=T["SURF"]); head.pack(fill="x")
+        tk.Label(head, text="!" if kind == "warn" else "i", bg=T["SURF"],
+                 fg=T["RED"] if kind == "warn" else T["ACCENT"],
+                 font=_f(13, "bold"), width=2).pack(side="left")
+        tk.Label(head, text=title or APP_NAME, bg=T["SURF"], fg=T["TEXT"],
+                 font=_f(12, "bold")).pack(side="left")
+        tk.Label(body, text=text, bg=T["SURF"], fg=T["MUTED"], font=_f(10),
+                 justify="left", wraplength=340).pack(anchor="w", pady=(10, 14))
+        RoundedButton(body, "OK", w.destroy, fg=_on_accent(),
+                      pad=(20, 10)).pack(anchor="e")
+        w.update_idletasks()
+        try:
+            base = parent or self.root
+            x = base.winfo_rootx() + (base.winfo_width() - w.winfo_width()) // 2
+            y = base.winfo_rooty() + 140
+            w.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        except Exception: pass
+        w.attributes("-topmost", True); w.lift(); w.focus_force()
+        return None
+
     def _show_update_prompt(self, new_ver, url):
-        """Modal asking user to update. Only one per session."""
+        """Update offer, in the app's own colours.
+
+        This used to be messagebox.askyesno — a system dialog that ignores the
+        theme entirely, so the one popup a user is guaranteed to see looked
+        nothing like the app."""
         if getattr(self, "_update_prompted", False): return
         self._update_prompted = True
-        ans = messagebox.askyesno(
-            APP_NAME,
-            f"Update available: v{new_ver}\n"
-            f"You're on v{APP_VER}\n\n"
-            f"Download v{new_ver} now?",
-            icon="info"
-        )
-        if ans:
-            self._open_url(url)
+        w = tk.Toplevel(self.root); w.title("Update available")
+        w.configure(bg=T["BG"]); w.resizable(False, False)
+        try: w.transient(self.root)
+        except Exception: pass
+
+        card = RoundedPanel(w, radius=14)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+        body = tk.Frame(card.inner, bg=T["SURF"]); body.pack(fill="both", expand=True,
+                                                             padx=18, pady=16)
+        head = tk.Frame(body, bg=T["SURF"]); head.pack(fill="x")
+        mark = _mono_logo(26, T["GREEN"] if T.get("PLINTH") else T["ACCENT"])
+        if mark is not None:
+            lg = tk.Label(head, image=mark, bg=T["SURF"]); lg.image = mark
+            lg.pack(side="left", padx=(0, 10))
+        tk.Label(head, text="Update available", bg=T["SURF"], fg=T["TEXT"],
+                 font=_f(15, "bold")).pack(side="left")
+        tk.Label(body, text=f"Version {new_ver} is out — you have {APP_VER}.",
+                 bg=T["SURF"], fg=T["MUTED"], font=_f(10), justify="left",
+                 wraplength=340).pack(anchor="w", pady=(12, 2))
+        tk.Label(body, text="The download starts in your browser; the app installs "
+                            "it the next time you open it.",
+                 bg=T["SURF"], fg=T["MUTED"], font=_f(9), justify="left",
+                 wraplength=340).pack(anchor="w", pady=(0, 14))
+
+        row = tk.Frame(body, bg=T["SURF"]); row.pack(fill="x")
+        def _go():
+            w.destroy(); self._open_url(url)
+        RoundedButton(row, "↓  Update now", _go, fg=_on_accent(),
+                      pad=(18, 11)).pack(side="right")
+        later = tk.Label(row, text="Later", bg=T["SURF"], fg=T["MUTED"],
+                         font=_f(10), cursor="hand2", padx=14, pady=8)
+        later.pack(side="right", padx=(0, 8))
+        later.bind("<Button-1>", lambda e: w.destroy())
+
+        w.update_idletasks()
+        try:
+            x = self.root.winfo_rootx() + (self.root.winfo_width() - w.winfo_width()) // 2
+            y = self.root.winfo_rooty() + 120
+            w.geometry("+%d+%d" % (max(0, x), max(0, y)))
+        except Exception: pass
+        w.attributes("-topmost", True); w.lift(); w.focus_force()
 
     def _open_url(self, url):
         try:

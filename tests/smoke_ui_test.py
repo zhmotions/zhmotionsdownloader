@@ -117,6 +117,12 @@ check("Clear Log", app._clear_log)
 check("log writes", lambda: app.log("[info] smoke"))
 check("status bar updates", lambda: app.status_var.set("smoke"))
 check("theme switch re-styles", lambda: app.set_theme("macOS", refresh=False))
+check("notices are drawn in the app, not by the OS",
+      lambda: app._notice("Theme will apply after restart.", "Theme"))
+check("warning notices too", lambda: app._notice("Stop first.", "Busy", "warn"))
+check("the update prompt is the app's own window, not a system dialog",
+      lambda: app._show_update_prompt("9.9.9", "https://example.com/"))
+ok("update prompt only appears once a session", getattr(app, "_update_prompted", False))
 check("text-size setting saves", lambda: app._on_text_size("Large"))
 check("settings save path", lambda: app._save_setting("concurrent", 4))
 check("schedule label updates", lambda: app._sched_var.set("In 1 hour"))
