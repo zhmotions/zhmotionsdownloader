@@ -70,6 +70,7 @@ def make_app(items):
     def runner(item):                      # finish instantly so the watcher exits
         item.status = "done"
     app._runner = runner
+    app._space_ok = lambda out: True       # don't let a full test-runner disk skip _do_start
     return app
 
 

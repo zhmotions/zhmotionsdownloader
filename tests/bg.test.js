@@ -41,7 +41,9 @@ function makeCtx(opts = {}) {
     storage: { local: area(rec.local), session: area(rec.session), onChanged: on("changed") },
     webRequest: { onResponseStarted: { addListener: fn => { rec.listeners.req = [fn]; } } },
     webNavigation: { onCommitted: on("nav"), onHistoryStateUpdated: on("navSpa") },
-    downloads: { onCreated: on("dl"), cancel: () => Promise.resolve(), erase: () => Promise.resolve(),
+    downloads: { onCreated: on("dl"), onChanged: on("dlChg"),
+                 cancel: () => Promise.resolve(), erase: () => Promise.resolve(),
+                 search: q => Promise.resolve([{ id: q && q.id, filename: (opts.dlFile || "/Users/x/Downloads/MyDesign.mp4") }]),
                  download: o => { rec.browserDownloads.push(o.url); return Promise.resolve(1); } },
     tabs: { onRemoved: on("tabGone"),
             // both call styles: the old file used the callback form
@@ -167,23 +169,32 @@ function rechandlers(ctx) { return _handlers.get(ctx) || []; }
     eq("nothing dumped on the browser", rec.browserDownloads, []);
   }
 
-  // ── 6. server-side render jobs (Canva &c.) go to the browser, not the app ──
+  // ── 6. server-side render jobs (Canva &c.): browser downloads, app adopts ──
   {
-    const { ctx, rec } = makeCtx({ pingOk: true });
+    const { ctx, rec } = makeCtx({ pingOk: true, dlFile: "/Users/x/Downloads/MyDesign.mp4" });
     const onCreated = rec.listeners.dl[0];
+    const onChanged = rec.listeners.dlChg[0];
     // export-job API call — Chrome proposed "MyDesign.mp4" for a JSON reply
     // (Canva's `e89a9216-…` failed row)
     await onCreated({ id: 1, filename: "MyDesign.mp4",
       url: "https://www.canva.com/_ajax/exports/e89a9216-e3ab-4525-be18-fcd28b5ae628" });
-    eq("canva export-job NOT sent to app", rec.posted, []);
-    // same shape, any host — a generic /generate endpoint
+    eq("canva export-job NOT sent to app on create", rec.posted, []);
+    eq("but it IS remembered for adoption", Object.keys(rec.session.adopt || {}), ["1"]);
+    // generic /generate endpoint on any host — remembered too
     await onCreated({ id: 2, filename: "video.mp4",
       url: "https://api.somesite.com/v2/generate/9f3a" });
-    eq("generic render endpoint NOT sent to app", rec.posted, []);
-    // the real file, from a CDN, with a proper extension → taken
+    eq("generic render endpoint remembered", Object.keys(rec.session.adopt || {}).sort(), ["1", "2"]);
+    // the real file, from a CDN, with a proper extension → taken normally
     await onCreated({ id: 3, filename: "MyDesign.mp4",
       url: "https://export-download.canva.com/x/0001-559874.mp4?X-Amz-Signature=abc" });
     eq("real CDN file IS sent to app", rec.posted.length, 1);
+    // browser finishes the export job → adopt the finished file
+    await onChanged({ id: 1, state: { current: "complete" } });
+    eq("finished file adopted (POST /adopt)", rec.posted.filter(u => u.endsWith("/adopt")).length, 1);
+    eq("adopt entry cleared after handoff", Object.keys(rec.session.adopt || {}), ["2"]);
+    // an interrupted one is just forgotten, no POST
+    await onChanged({ id: 2, state: { current: "interrupted" } });
+    eq("interrupted job forgotten, not adopted", Object.keys(rec.session.adopt || {}), []);
   }
 
   console.log("\n" + (fails ? fails + " FAILED, " : "") + passes + " passed");

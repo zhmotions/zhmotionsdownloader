@@ -14,6 +14,7 @@ import pathlib
 import sys
 import tempfile
 import threading
+import time
 
 HOME = tempfile.mkdtemp(prefix="zh-smoke-")
 os.environ["HOME"] = HOME                      # before import: paths are module-level
@@ -123,6 +124,27 @@ check("warning notices too", lambda: app._notice("Stop first.", "Busy", "warn"))
 check("the update prompt is the app's own window, not a system dialog",
       lambda: app._show_update_prompt("9.9.9", "https://example.com/"))
 ok("update prompt only appears once a session", getattr(app, "_update_prompted", False))
+
+# adopt: a finished browser download handed over by the extension
+def _adopt_smoke():
+    src = pathlib.Path(HOME) / "Downloads" / "Design abc123.mp4"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"\x00" * 4096)
+    app.ff = None                                    # skip the transcode branch
+    app._adopt_file(str(src), "https://www.canva.com/design/DAF/view",
+                    "My Cool Poster", "https://www.canva.com/design/DAF/edit")
+    for _ in range(60):
+        if not src.exists():
+            break
+        time.sleep(0.05)
+    assert not src.exists(), "adopt did not move the file out of Downloads"
+    assert any(getattr(i, "done_f", "") for i in app._items), "adopted item has no done_f"
+check("adopt: browser download is moved into the queue + renamed", _adopt_smoke)
+check("adopt rejects a path outside HOME",
+      lambda: app._adopt_file("/etc/hosts", "x", "", ""))
+check("adopt rejects a missing file",
+      lambda: app._adopt_file(str(pathlib.Path(HOME) / "nope.mp4"), "x", "", ""))
+
 check("text-size setting saves", lambda: app._on_text_size("Large"))
 check("settings save path", lambda: app._save_setting("concurrent", 4))
 check("schedule label updates", lambda: app._sched_var.set("In 1 hour"))

@@ -1762,6 +1762,8 @@ class Bridge(BaseHTTPRequestHandler):
         else:
             self.send_response(404); self._c(); self.end_headers()
     def do_POST(self):
+        if self.path == "/adopt":
+            return self._adopt()
         if self.path!="/download":
             self.send_response(404); self._c(); self.end_headers(); return
         if not self._origin_ok():                       # block websites
@@ -1796,6 +1798,28 @@ class Bridge(BaseHTTPRequestHandler):
         self.send_response(200); self._c()
         self.send_header("Content-Type","application/json"); self.end_headers()
         self.wfile.write(json.dumps({"ok": True, "status": status}).encode())
+
+    def _adopt(self):
+        """A browser download ZH stepped aside from (a render/export job on
+        canva/figma/etc.) has finished — the extension hands us the local file so
+        it still gets renamed / transcoded / logged."""
+        if not self._origin_ok():
+            self.send_response(403); self._c(); self.end_headers(); return
+        try:
+            n = min(int(self.headers.get("Content-Length", "0") or 0), 8 * 1024)
+            d = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(d, dict): d = {}
+        except Exception:
+            d = {}
+        path  = (str(d.get("path")    or "").strip())[:4000]
+        url   = (str(d.get("url")     or "").strip())[:2000]
+        title = (str(d.get("title")   or "").strip())[:300]
+        ref   = (str(d.get("referer") or "").strip())[:2000]
+        self.send_response(200); self._c()
+        self.send_header("Content-Type","application/json"); self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+        if path:
+            self.app._mq.put(("adopt", (path, url, title, ref)))
 
 # -- Main App ---------------------------------------------------------------
 class App:
@@ -3219,6 +3243,8 @@ class App:
                     self._native_basket_save_xy(*payload)
                 elif kind=="ext_url":
                     self._recv_ext(payload)
+                elif kind=="adopt":
+                    self._adopt_file(*payload)
                 elif kind=="hist_add":
                     self.history.add(payload)
                     if hasattr(self,"hist_tree"): self._hist_refresh()
@@ -3262,6 +3288,59 @@ class App:
             return urllib.parse.urlunsplit((sp.scheme, sp.netloc, sp.path, q, ""))
         except Exception:
             return base
+
+    def _adopt_file(self, src, url, title, referer):
+        """Main thread: a browser download the extension stepped aside from has
+        finished. Validate, show a row, then move + rename + transcode it off-thread."""
+        try:
+            rp = Path(src).expanduser().resolve()
+            home = Path.home().resolve()
+            if not rp.is_file(): return
+            if not str(rp).startswith(str(home)): return          # never touch outside ~
+            out_root = Path(getattr(self, "_out", None) or self.cfg.get("dir", DEFAULT_DIR)).resolve()
+            if str(rp).startswith(str(out_root)): return           # already in our folder
+        except Exception:
+            return
+        item = DL(url or ("file:" + rp.name), 1, 1, referer or "")
+        item.name = rp.name
+        item.status = "downloading"; item.pct = 0
+        self._referers[item.url] = referer or ""
+        if title: self._ext_titles[item.url] = title
+        self._items.append(item)
+        self._build_rows(self._items)
+        self.log(f"[adopt] {rp.name} — finished in your browser, bringing it in")
+        threading.Thread(target=self._adopt_work, args=(item, str(rp)), daemon=True).start()
+
+    def _adopt_work(self, item, src):
+        """Worker: move the finished file into ZH's folder, then rename + transcode
+        + log it exactly like a normal download's post-processing."""
+        try:
+            out = getattr(self, "_out", None) or self.cfg.get("dir", DEFAULT_DIR)
+            if self.cfg.get("categorize", False):
+                out = str(Path(out) / site_folder(item.url, getattr(item, "referer", "") or ""))
+            Path(out).mkdir(parents=True, exist_ok=True)
+            final = self._resolve_conflict(Path(out) / Path(src).name)
+            if final is None:
+                item.status = "cancelled"; self._mq.put(("item_up", item))
+                self._mq.put(("status", "Adopt skipped — that file already exists")); return
+            shutil.move(src, str(final))
+            item.done_f = str(final)
+            try: item.size_v = final.stat().st_size
+            except Exception: pass
+            self._mq.put(("item_up", item))
+            self._rename_if_uuid(item, item.url)
+            if self.ff:
+                self._force_h264_if_needed(item)
+            if item.done_f and item.done_f not in self._done_files:
+                self._done_files.append(item.done_f)
+            item.status = "done"; item.pct = 100; item.end_t = time.time()
+            self._mq.put(("item_up", item))
+            self._mq.put(("hist_add", item)); self._mq.put(("stats_add", item))
+            self.log(f"[done] {Path(item.done_f).name}")
+            self._notify("Adopted from browser", Path(item.done_f).name)
+        except Exception as e:
+            self.log(f"[error] adopt failed: {e}")
+            item.status = "error"; self._mq.put(("item_up", item))
 
     def _recv_ext(self, payload):
         """Background receive — no window jump, no bell."""

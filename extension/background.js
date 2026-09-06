@@ -218,8 +218,23 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
   if (!isMedia && !isFile) return;
 
   // Filename-only match on a bare URL path = an API / export-job endpoint, not a
-  // file (see _pathHasExt note above). Leave it with the browser.
-  if (!urlIsFile && !_pathHasExt(url)) return;
+  // file (see _pathHasExt note above). Leave it with the browser — but remember
+  // its id: when the browser finishes the *real* file, adopt it into the app so
+  // Canva/Figma/… downloads still get renamed / transcoded / logged.
+  if (!urlIsFile && !_pathHasExt(url)) {
+    try {
+      const t = await chrome.tabs.query({ active:true, currentWindow:true });
+      const pageUrl = t[0]?.url || "";
+      if (SESSION && !whitelist.some(w => pageUrl.includes(w))) {
+        const { adopt = {} } = await SESSION.get("adopt");
+        const cut = Date.now() - 60*60*1000;              // drop entries > 1h old
+        for (const k of Object.keys(adopt)) if (adopt[k].ts < cut) delete adopt[k];
+        adopt[downloadItem.id] = { url, pageUrl, ts: Date.now() };
+        SESSION.set({ adopt }).catch(()=>{});
+      }
+    } catch {}
+    return;
+  }
 
   // Check whitelist
   let tabUrl = "";
@@ -240,6 +255,39 @@ chrome.downloads.onCreated.addListener(async downloadItem => {
   // it — the old `if (!ok.ok) chrome.downloads.download(url)` guard here could
   // never fire, because sendToApp resolves {ok:true} as soon as it queues.
   await sendToApp(url, tabUrl || undefined, "", "", "intercept");
+});
+
+// ── Adopt: a render-job file we stepped aside from has finished downloading ──
+// The browser did the work (it has the session); we hand the finished file to
+// the app so it still runs through rename / transcode / history.
+chrome.downloads.onChanged && chrome.downloads.onChanged.addListener(async delta => {
+  if (!SESSION || !delta || !delta.state) return;        // ignore byte-progress deltas
+  const { adopt = {} } = await SESSION.get("adopt");
+  const meta = adopt[delta.id];
+  if (!meta) return;
+  const st = delta.state.current;
+  if (st !== "complete") {
+    if (st === "interrupted") { delete adopt[delta.id]; SESSION.set({ adopt }).catch(()=>{}); }
+    return;
+  }
+  delete adopt[delta.id]; SESSION.set({ adopt }).catch(()=>{});
+  let path = "";
+  try { const r = await chrome.downloads.search({ id: delta.id }); path = (r[0] || {}).filename || ""; } catch {}
+  if (!path) return;
+  let title = "";
+  try {
+    const base = (meta.pageUrl || "").split("?")[0];
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find(x => x.url === meta.pageUrl) || tabs.find(x => (x.url || "").startsWith(base));
+    title = (tab && tab.title) || "";
+  } catch {}
+  try {
+    await fetch("http://127.0.0.1:9613/adopt", {
+      method: "POST",
+      body: JSON.stringify({ path, url: meta.url, referer: meta.pageUrl, title }),
+    });
+    notify("Sent to ZH Downloader", path.split(/[\\/]/).pop());
+  } catch {}   // app closed — the file is on disk in Downloads, nothing lost
 });
 
 // ── Context menu ───────────────────────────────────────────────────────────
