@@ -2379,7 +2379,7 @@ class App:
         finally: m.grab_release()
 
     def _hist_clear(self):
-        if messagebox.askyesno(APP_NAME, "Clear all history? This cannot be undone."):
+        if self._ask(APP_NAME, "Clear all history? This cannot be undone."):
             self.history.clear()
             self._hist_refresh()
 
@@ -2464,7 +2464,7 @@ class App:
             canvas.create_text(x+bw/2, 138, text=day[5:], fill=T["MUTED"], font=_f(7))
 
     def _reset_stats(self):
-        if not messagebox.askyesno(APP_NAME,"Reset all lifetime statistics?"): return
+        if not self._ask(APP_NAME,"Reset all lifetime statistics?"): return
         for k in ("total_files","total_bytes","total_time","max_speed"):
             self.stats.data[k] = 0
         self.stats.data["by_category"] = {}
@@ -3536,7 +3536,7 @@ class App:
 
     def _ext_dialog(self):
         w = tk.Toplevel(self.root); w.title("Browser integration")
-        w.configure(bg=T["BG"]); w.geometry("520x300"); w.transient(self.root)
+        w.configure(bg=T["BG"]); w.geometry("520x300"); w.transient(self.root); self._front(w)
         tk.Label(w, text="🧩 Browser extension", bg=T["BG"], fg=T["TEXT"],
                  font=_f(14, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
         tk.Label(w, text=("The extension adds the ⬇ Download button on top of videos\n"
@@ -3612,7 +3612,7 @@ class App:
 
     def _playlist_picker(self, entries, out, fk):
         w = tk.Toplevel(self.root); w.title(f"Playlist — {len(entries)} items")
-        w.configure(bg=T["BG"]); w.geometry("620x520"); w.transient(self.root)
+        w.configure(bg=T["BG"]); w.geometry("620x520"); w.transient(self.root); self._front(w)
         tk.Label(w, text=f"Select what to download ({len(entries)} items found)",
                  bg=T["BG"], fg=T["TEXT"], font=_f(13, "bold")).pack(anchor="w", padx=14, pady=(12, 6))
         # scrollable checkbox list
@@ -4300,6 +4300,7 @@ class App:
     def _open_pro(self):
         win = tk.Toplevel(self.root); win.title("ZH Downloader Pro")
         win.configure(bg=T["BG"]); win.geometry("440x420"); win.resizable(False, False)
+        self._front(win)
         tk.Label(win, text="ZH Downloader Pro", bg=T["BG"], fg=T["ACCENT"],
                  font=_f(18, "bold")).pack(anchor="w", padx=18, pady=(16,2))
         status = tk.Label(win, bg=T["BG"], font=_f(12, "bold"))
@@ -4315,23 +4316,23 @@ class App:
         entry = tk.Entry(row, font=_mono(12)); entry.pack(side="left", fill="x", expand=True, ipady=4)
         def do_activate():
             key = entry.get().strip()
-            if not key: messagebox.showinfo("License","Enter your key."); return
+            if not key: self._info("License","Enter your key."); return
             status.configure(text="Verifying…", fg=T["MUTED"])
             def run():
                 ok, plan, msg = license_verify(key)
                 def done():
-                    if ok is None: messagebox.showwarning("License","Couldn't reach server. Check internet.")
+                    if ok is None: self._warn("License","Couldn't reach server. Check internet.")
                     elif ok:
                         self.lic.update({"key":key,"valid":True,"plan":plan or "pro","checked":time.time()})
                         self._save_license(); self._refresh_pro_badge(); _set_status()
-                        messagebox.showinfo("License","✅ Pro unlocked. Thank you!")
+                        self._info("License","✅ Pro unlocked. Thank you!")
                     else:
-                        messagebox.showwarning("License", msg or "Invalid or inactive key.")
+                        self._warn("License", msg or "Invalid or inactive key.")
                 self.root.after(0, done)
             threading.Thread(target=run, daemon=True).start()
         tk.Button(row, text="Activate", command=do_activate).pack(side="right", padx=(8,0))
         def deactivate():
-            if not messagebox.askyesno("Deactivate","Remove license from this device?"): return
+            if not self._ask("Deactivate","Remove license from this device?"): return
             self.lic = {"key":"","plan":"free","valid":False,"checked":0}
             try: LIC_FILE.unlink()
             except Exception: pass
@@ -4365,7 +4366,7 @@ class App:
             done_urls = {r.get("url","") for r in self.history.all() if r.get("status")=="done"}
             skipped = [u for u in urls if u in done_urls]
             if skipped:
-                if messagebox.askyesno(APP_NAME,
+                if self._ask(APP_NAME,
                     f"{len(skipped)} URL(s) already downloaded previously.\n"
                     f"Skip them?"):
                     urls = [u for u in urls if u not in done_urls]
@@ -4424,7 +4425,7 @@ class App:
         delay = self._get_sched_delay()
         if (not self.is_pro()) and delay and delay > 0:
             self.log("[pro] Scheduler is a Pro feature. ⭐ Upgrade to schedule.")
-            messagebox.showinfo("ZH Downloader Pro", "Scheduling is a Pro feature.\nUpgrade in ⭐ Pro to schedule downloads.")
+            self._info("ZH Downloader Pro", "Scheduling is a Pro feature.\nUpgrade in ⭐ Pro to schedule downloads.")
             delay = 0
         if delay and delay > 0:
             if self._sched_timer: self.root.after_cancel(self._sched_timer)
@@ -4688,7 +4689,7 @@ class App:
         if policy == "ask" and threading.current_thread() is not threading.main_thread():
             policy = "rename"
         if policy == "ask":
-            ans = messagebox.askyesnocancel(APP_NAME,
+            ans = self._askc(APP_NAME,
                 f"File exists:\n{p.name}\n\nYes = overwrite, No = rename, Cancel = skip")
             if ans is True: return p
             if ans is None: return None
@@ -5601,7 +5602,7 @@ class App:
         d = tk.Toplevel(self.root)
         d.title("Grab media from page")
         d.geometry("600x420")
-        d.configure(bg=T["BG"])
+        d.configure(bg=T["BG"]); d.transient(self.root); self._front(d)
         tk.Label(d, text="Paste page URL — app will fetch HTML and extract media links",
                  bg=T["BG"], fg=T["TEXT"], font=_f(10)).pack(pady=(14,6))
         v = tk.StringVar()
@@ -5703,7 +5704,7 @@ class App:
     def _shutdown_warn(self):
         w = tk.Toplevel(self.root)
         w.title("Shutdown scheduled")
-        w.geometry("400x180"); w.configure(bg=T["BG"])
+        w.geometry("400x180"); w.configure(bg=T["BG"]); w.transient(self.root); self._front(w)
         tk.Label(w, text="⚠ Shutdown in 60 seconds", bg=T["BG"], fg=T["RED"],
                  font=_f(14,"bold")).pack(pady=14)
         cnt = tk.IntVar(value=60)
@@ -5813,12 +5814,35 @@ class App:
         self.root.after(0, self._restore_window)
 
     def _restore_window(self):
+        self._front()
+
+    def _front(self, w=None):
+        """Bring a window to the front. macOS Tk paints messagebox / Toplevel
+        BEHIND the main window whenever the app isn't the frontmost process —
+        call this right before a dialog, and right after creating a Toplevel."""
+        w = w or self.root
+        try: w.deiconify()
+        except Exception: pass
         try:
-            self.root.deiconify()
-            self.root.lift()
-            self.root.attributes("-topmost", True)
-            self.root.after(50, lambda: self.root.attributes("-topmost", False))
-        except: pass
+            w.lift(); w.focus_force()
+            w.attributes("-topmost", True)
+            w.after(400, lambda: w.winfo_exists() and w.attributes("-topmost", False))
+        except Exception: pass
+
+    def _mbox(self, fn, *a, **kw):
+        """messagebox.* that actually shows in front. Raises the parent first and
+        attaches the dialog to it so macOS can't bury it."""
+        parent = kw.pop("parent", None) or self.root
+        self._front(parent)
+        try:
+            return fn(*a, parent=parent, **kw)
+        except tk.TclError:
+            return fn(*a, **kw)
+    def _ask (self, *a, **k): return self._mbox(messagebox.askyesno, *a, **k)
+    def _askc(self, *a, **k): return self._mbox(messagebox.askyesnocancel, *a, **k)
+    def _info(self, *a, **k): return self._mbox(messagebox.showinfo, *a, **k)
+    def _warn(self, *a, **k): return self._mbox(messagebox.showwarning, *a, **k)
+    def _err (self, *a, **k): return self._mbox(messagebox.showerror, *a, **k)
 
     def _tray_add_clip(self, icon=None, item=None):
         # Menu-bar path into the same add popup — works even where the floating
@@ -5850,6 +5874,7 @@ class App:
         d = tk.Toplevel(self.root)
         d.title("Help — ZH Downloader")
         d.geometry("680x600"); d.configure(bg=T["BG"])
+        self._front(d)
         try: d.transient(self.root)
         except: pass
 
@@ -5964,7 +5989,7 @@ class App:
 
     def _update_now(self):
         if getattr(self, "_updating", False):
-            messagebox.showinfo(APP_NAME, "An update is already downloading — progress is in the log.")
+            self._info(APP_NAME, "An update is already downloading — progress is in the log.")
             return
         self._updating = True
         self._mq.put(("status", "Checking for updates…"))
@@ -5988,7 +6013,7 @@ class App:
             if err or not latest:
                 self._updating = False
                 self._mq.put(("status", ""))
-                messagebox.showwarning(APP_NAME, "Couldn't check for updates.\n"
+                self._warn(APP_NAME, "Couldn't check for updates.\n"
                                        f"{err or 'No version info from the server.'}\n\n"
                                        "Check your internet connection and try again.")
                 return
@@ -5996,9 +6021,9 @@ class App:
                 self._updating = False
                 self._mq.put(("status", ""))
                 self.log(f"[update] you're on the latest version (v{APP_VER}) ✓")
-                messagebox.showinfo(APP_NAME, f"You're up to date ✓\n\nZH Downloader v{APP_VER} is the latest version.")
+                self._info(APP_NAME, f"You're up to date ✓\n\nZH Downloader v{APP_VER} is the latest version.")
                 return
-            if messagebox.askyesno(APP_NAME,
+            if self._ask(APP_NAME,
                     f"Update available: v{latest}\nYou're on v{APP_VER}\n\n"
                     "Download the installer now? (~100 MB — takes a minute or two)"):
                 self._mq.put(("status", f"Downloading v{latest} installer…"))
@@ -6053,7 +6078,7 @@ class App:
             elif os.name == "nt":
                 url, fname = f"https://zhmotions.com/downloader/ZHDownloader-Setup.msi?v={latest}", f"ZHDownloader-Setup-{latest}.msi"
             else:
-                self.root.after(0, lambda: messagebox.showinfo(APP_NAME,
+                self.root.after(0, lambda: self._info(APP_NAME,
                     "Auto-install isn't supported on this OS — get it from zhmotions.com/downloader"))
                 return
             dest = Path.home() / "Downloads" / fname
@@ -6063,20 +6088,20 @@ class App:
                 try: dest.unlink(missing_ok=True)
                 except Exception: pass
                 self.log("[update] download failed")
-                self.root.after(0, lambda: messagebox.showwarning(APP_NAME,
+                self.root.after(0, lambda: self._warn(APP_NAME,
                     "The download failed.\n\nGet the installer manually from\nzhmotions.com/downloader"))
                 return
             mb = dest.stat().st_size // 1048576
             self.log(f"[update] downloaded {dest.name} ({mb} MB) — opening installer")
             def done():
-                messagebox.showinfo(APP_NAME,
+                self._info(APP_NAME,
                     f"Installer downloaded ({mb} MB) ✓\n\n"
                     "It will open now — finish the install, then reopen ZH Downloader.")
                 try:
                     if sys.platform == "darwin": subprocess.Popen(["open", str(dest)])
                     else: os.startfile(str(dest))  # noqa — Windows only
                 except Exception as e:
-                    messagebox.showwarning(APP_NAME, f"Open it from your Downloads folder: {dest.name}\n({e})")
+                    self._warn(APP_NAME, f"Open it from your Downloads folder: {dest.name}\n({e})")
             self.root.after(0, done)
         except Exception as e:
             self.log(f"[update] {e}")
@@ -6254,7 +6279,8 @@ class App:
         try:
             w = tk.Toplevel(parent or self.root)
         except Exception:
-            return messagebox.showinfo(APP_NAME, text)
+            try: return messagebox.showinfo(APP_NAME, text)
+            except Exception: return None
         w.title(title or APP_NAME); w.configure(bg=T["BG"]); w.resizable(False, False)
         try: w.transient(parent or self.root)
         except Exception: pass
@@ -6353,6 +6379,7 @@ class App:
         d = tk.Toplevel(self.root)
         d.title("About")
         d.geometry("440x540"); d.configure(bg=T["BG"]); d.resizable(False, False)
+        self._front(d)
         try: d.transient(self.root); d.grab_set()
         except: pass
 
