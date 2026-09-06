@@ -6193,6 +6193,8 @@ class App:
                  justify="left", wraplength=340).pack(anchor="w", pady=(10, 14))
         RoundedButton(body, "OK", w.destroy, fg=_on_accent(),
                       pad=(20, 10)).pack(anchor="e")
+        for k in ("<Return>", "<Escape>", "<space>"):
+            w.bind(k, lambda e: w.destroy())
         w.update_idletasks()
         try:
             base = parent or self.root
@@ -6200,7 +6202,9 @@ class App:
             y = base.winfo_rooty() + 140
             w.geometry("+%d+%d" % (max(0, x), max(0, y)))
         except Exception: pass
-        w.attributes("-topmost", True); w.lift(); w.focus_force()
+        w.lift(); w.focus_force()
+        w.attributes("-topmost", True)
+        w.after(1200, lambda: w.winfo_exists() and w.attributes("-topmost", False))
         return None
 
     def _show_update_prompt(self, new_ver, url):
@@ -6244,6 +6248,8 @@ class App:
                          font=_f(10), cursor="hand2", padx=14, pady=8)
         later.pack(side="right", padx=(0, 8))
         later.bind("<Button-1>", lambda e: w.destroy())
+        w.bind("<Escape>", lambda e: w.destroy())
+        w.bind("<Return>", lambda e: _go())
 
         w.update_idletasks()
         try:
@@ -6251,7 +6257,9 @@ class App:
             y = self.root.winfo_rooty() + 120
             w.geometry("+%d+%d" % (max(0, x), max(0, y)))
         except Exception: pass
-        w.attributes("-topmost", True); w.lift(); w.focus_force()
+        w.lift(); w.focus_force()
+        w.attributes("-topmost", True)
+        w.after(1200, lambda: w.winfo_exists() and w.attributes("-topmost", False))
 
     def _open_url(self, url):
         try:
