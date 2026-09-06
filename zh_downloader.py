@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.32"
+APP_VER     = "6.6.33"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -348,6 +348,9 @@ def _error_hint(msg, url=""):
     if u.startswith("blob:"):
         return ("blob: links only exist inside the browser tab — use the site's own "
                 "download button, or the ZH extension on the page.")
+    if "canva.com" in u:
+        return ("Canva builds the file on its own servers — click Canva's Download "
+                "button and let it finish; ZH then grabs the file, not the export job.")
     if "only works when logged-in" in m or "login required" in m or "sign in to confirm" in m:
         site = u.split("/")[2] if u.startswith("http") and len(u.split("/")) > 2 else "this site"
         return (f"Set Cookies to your browser (Advanced options) and stay logged in to "

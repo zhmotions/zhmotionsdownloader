@@ -183,22 +183,46 @@ const SKIP_HOSTS = [
 const MEDIA_RE = /\.(mp4|webm|mkv|mov|flv|avi|mp3|m4a|wav|flac|aac|ogg|m3u8|mpd|ts|m4s)(\?|$)/i;
 const FILE_RE  = /\.(pdf|zip|rar|7z|exe|dmg|pkg|msi|apk|iso|tar\.gz|tar|gz|bz2|epub|torrent)(\?|$)/i;
 
+// Sites that render a file on their servers first: you click Download, an
+// export/render JOB fires (a bare-id API call on the *app* domain), then the
+// real file downloads from a *different* CDN host a few seconds later. Chrome
+// can propose a media filename for the JOB request (Canva's `e89a9216-…` failed
+// row) — intercepting that hands the app a URL that returns JSON. So on the app
+// domain itself, only take the download when the URL path ends in a real
+// extension; the CDN file that follows (export-download.canva.com etc.) is a
+// different host and gets caught normally.
+const EXPORT_JOB_HOSTS = [
+  "www.canva.com", "canva.com", "www.figma.com", "figma.com",
+  "docs.google.com", "www.notion.so", "notion.so", "www.framer.com", "framer.com",
+];
+
+function _pathHasExt(u) {
+  try { return /\.[a-z0-9]{2,5}$/i.test(new URL(u).pathname); } catch { return false; }
+}
+
 chrome.downloads.onCreated.addListener(async downloadItem => {
   if (!intercept) return;
   const url = downloadItem.url || downloadItem.finalUrl || "";
   if (!url || url.startsWith("blob:") || url.startsWith("data:")) return;
 
   // Skip non-media/file sites
+  let host = "";
   try {
-    const host = new URL(url).hostname;
+    host = new URL(url).hostname;
     if (SKIP_HOSTS.some(s => host.includes(s))) return;
   } catch { return; }
 
   // Only intercept actual media/file downloads
   const fname = downloadItem.filename || "";
-  const isMedia = MEDIA_RE.test(url) || MEDIA_RE.test(fname);
-  const isFile  = FILE_RE.test(url)  || FILE_RE.test(fname);
+  const urlIsFile = MEDIA_RE.test(url) || FILE_RE.test(url);
+  const isMedia = urlIsFile || MEDIA_RE.test(fname);
+  const isFile  = urlIsFile || FILE_RE.test(fname);
   if (!isMedia && !isFile) return;
+
+  // Export-job API call on the Canva/Figma/Docs app domain (filename guessed,
+  // URL path bare) → not the file. Let the browser have it; the real download
+  // fires next from the CDN host and that one we take.
+  if (!urlIsFile && EXPORT_JOB_HOSTS.includes(host) && !_pathHasExt(url)) return;
 
   // Check whitelist
   let tabUrl = "";

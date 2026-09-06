@@ -167,6 +167,21 @@ function rechandlers(ctx) { return _handlers.get(ctx) || []; }
     eq("nothing dumped on the browser", rec.browserDownloads, []);
   }
 
+  // ── 6. Canva's render-job URL is ignored; the CDN file that follows is taken ──
+  {
+    const { ctx, rec } = makeCtx({ pingOk: true });
+    const onCreated = rec.listeners.dl[0];
+    // the export-job API call — Chrome proposed "MyDesign.mp4" for a JSON response
+    // (this is the `e89a9216-…` row that showed up Failed)
+    await onCreated({ id: 1, filename: "MyDesign.mp4",
+      url: "https://www.canva.com/_ajax/exports/e89a9216-e3ab-4525-be18-fcd28b5ae628" });
+    eq("canva export-job NOT sent to app", rec.posted, []);
+    // the real file a few seconds later, from a different (CDN) host
+    await onCreated({ id: 2, filename: "MyDesign.mp4",
+      url: "https://export-download.canva.com/x/0001-559874.mp4?X-Amz-Signature=abc" });
+    eq("canva CDN file IS sent to app", rec.posted.length, 1);
+  }
+
   console.log("\n" + (fails ? fails + " FAILED, " : "") + passes + " passed");
   process.exit(fails ? 1 : 0);
 })();
