@@ -14,6 +14,11 @@
 #   filedl_test.py      FileDL against a local server that truncates ranges, ignores
 #                       them, or sends odd filenames — the paths that silently
 #                       produced corrupt files
+#   swallowed_error_test.py  _run_video with ignoreerrors=True swallowing the
+#                       failure (yt-dlp logs, doesn't raise): the real error has
+#                       to reach _error_hint (not a hardcoded "unsupported url"),
+#                       and a Cloudflare anti-bot 403 gets one retry with
+#                       curl_cffi impersonation before the row is marked error
 #   bg.test.js          runs extension/background.js inside a node vm with a
 #                       stubbed chrome API (sniffed-stream persistence across a
 #                       service-worker restart, pending-queue TTL, hand-back of
@@ -42,6 +47,10 @@ python3 "$here/fb_retry_test.py"
 echo
 echo "== queue-row actions + font scaling =="
 python3 "$here/row_actions_test.py"
+
+echo
+echo "== swallowed-failure hint + Cloudflare impersonation retry =="
+python3 "$here/swallowed_error_test.py"
 
 echo
 echo "== file downloader (local server: ranges, resume, bad names) =="

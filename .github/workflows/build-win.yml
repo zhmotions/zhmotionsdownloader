@@ -114,6 +114,7 @@ jobs:
             --collect-all PIL `
             --add-binary "qjs.exe;." `
             --collect-all yt_dlp_ejs `
+            --collect-all curl_cffi `
             --hidden-import pystray._darwin `
             --hidden-import pystray._win32 `
             --hidden-import pystray._base `

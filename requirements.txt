@@ -3,6 +3,11 @@ yt-dlp @ https://github.com/yt-dlp/yt-dlp/archive/master.zip
 # YouTube's `n` challenge solver script (188 KB). Without it yt-dlp only warns
 # "n challenge solving failed" and every YouTube media URL 403s.
 yt-dlp-ejs
+# Real browser TLS/JA3 fingerprint — without it, any Cloudflare-protected
+# generic/direct-link site 403s every request with "anti-bot challenge".
+# macOS: installed from the vendored universal2 wheel (see build_mac.sh) —
+# PyPI ships arm64/x86_64 wheels separately, no universal2.
+curl_cffi>=0.16.0
 certifi>=2024.2.2
 Pillow>=10.0.0
 tkinterdnd2>=0.4.0

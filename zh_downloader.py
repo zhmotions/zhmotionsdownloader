@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.33"
+APP_VER     = "6.6.34"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -363,6 +363,10 @@ def _error_hint(msg, url=""):
     if "no space left" in m or "errno 28" in m:
         return ("Your disk is full — free up space, or pick another folder in "
                 "Advanced options → Save to, then press Download again.")
+    if "cloudflare" in m and "anti-bot" in m:
+        return ("This site's Cloudflare check blocked the request even with browser "
+                "impersonation on — try again in a moment, or open the page and use "
+                "the ZH browser extension's Download button instead.")
     if "http error 403" in m:
         return "403 from the site — try Cookies → your browser, or a different Format."
     return ""
@@ -5023,14 +5027,32 @@ class App:
             # failing extraction twice before giving up. No file = error, now.
             if not item.done_f and item.status in ("waiting", "downloading") \
                and not self._stop.is_set() and not item.stop_ev.is_set():
-                if self._fallback_to_file(url, out, item, "no video in the page"):
+                last_err = getattr(opts.get("logger"), "last_err", "") or ""
+                # Cloudflare's anti-bot challenge wants a real browser TLS
+                # fingerprint — plain urllib always 403s it. One retry with
+                # curl_cffi impersonation on, only when that's actually why
+                # it failed (not every 403 is Cloudflare).
+                if "impersonate" not in opts and _cffi_available() and \
+                   "cloudflare" in last_err.lower() and "anti-bot" in last_err.lower():
+                    self.log("[info] Cloudflare check — retrying with browser impersonation…")
+                    opts2 = dict(opts); opts2["impersonate"] = "chrome"
+                    log2 = _Log(self); opts2["logger"] = log2
+                    try:
+                        _try(opts2)
+                    except yt_dlp.utils.DownloadCancelled:
+                        raise
+                    except Exception:
+                        pass
+                    last_err = log2.last_err or last_err
+                if not item.done_f:
+                    if self._fallback_to_file(url, out, item, "no video in the page"):
+                        return
+                    hint = _error_hint(last_err or "unsupported url", url)
+                    if hint: self.log(f"[info] {hint}")
+                    item.status = "error"
+                    self.log(f"[error] no media found at: {url[:70]} — open the actual video/tweet page and try again")
+                    self._mq.put(("item_up", item))
                     return
-                hint = _error_hint("unsupported url", url)
-                if hint: self.log(f"[info] {hint}")
-                item.status = "error"
-                self.log(f"[error] no media found at: {url[:70]} — open the actual video/tweet page and try again")
-                self._mq.put(("item_up", item))
-                return
             # Skip rename + transcode if running in download-only phase.
             # _postprocess will handle them outside semaphore.
             if getattr(item, "_skip_transcode", False):
@@ -6458,13 +6480,21 @@ class App:
 
 
 class _Log:
-    def __init__(self,a): self.a=a
+    def __init__(self,a):
+        self.a=a
+        # ignoreerrors=True means yt-dlp swallows a failure right here —
+        # .error() runs, nothing raises — so _run_video's "no media found"
+        # fallback had no way to know WHY and always passed the same
+        # hardcoded "unsupported url" to _error_hint(), burying the real,
+        # actionable reason (sign-in wall, private video, Cloudflare...)
+        # under a generic "no extractor" message. Stash it here instead.
+        self.last_err = ""
     def debug(self,m):
         if m.startswith("[debug]") or ("[download]" in m and "%" in m): return
         self.a.log(m)
     def info(self,m):    self.a.log(m)
     def warning(self,m): self.a.log(f"[warn] {m}")
-    def error(self,m):   self.a.log(f"[error] {m}")
+    def error(self,m):   self.last_err = m; self.a.log(f"[error] {m}")
 
 
 def _js_runtimes_opt():
@@ -6495,6 +6525,19 @@ def _ejs_bundled():
     yt-dlp's runtime download fallback."""
     try:
         import yt_dlp_ejs  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _cffi_available():
+    """curl_cffi gives yt-dlp a real browser TLS/JA3 fingerprint — the only way
+    past a Cloudflare 'anti-bot challenge', which plain urllib always 403s.
+    Shipped via requirements.txt + the vendored universal2 wheel (macOS) /
+    PyPI wheel (Windows); this just decides whether the impersonate retry in
+    _run_video has anything to retry WITH."""
+    try:
+        import curl_cffi  # noqa: F401
         return True
     except Exception:
         return False

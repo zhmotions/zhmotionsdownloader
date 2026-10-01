@@ -52,6 +52,19 @@ if ls vendor/wheels/pillow-*universal2.whl >/dev/null 2>&1; then
   echo "    Installing universal2 Pillow from vendor/wheels"
   pip install --quiet --force-reinstall vendor/wheels/pillow-*universal2.whl
 fi
+# Same problem for curl_cffi (Cloudflare impersonation) — PyPI ships arm64 and
+# x86_64 wheels separately, never universal2. Ours is lipo-merged from both.
+# curl_cffi pulls in cffi, whose compiled _cffi_backend is EQUALLY thin —
+# PyInstaller's universal2 pass fails on that one too if it's left to pip's
+# own (arm64-only, on this machine) resolution, so it needs the same fix.
+if ls vendor/wheels/cffi-*universal2.whl >/dev/null 2>&1 && \
+   ls vendor/wheels/curl_cffi-*universal2.whl >/dev/null 2>&1; then
+  echo "    Installing universal2 cffi + curl_cffi from vendor/wheels"
+  pip install --quiet --force-reinstall vendor/wheels/cffi-*universal2.whl vendor/wheels/curl_cffi-*universal2.whl
+else
+  echo "  ⚠ vendor/wheels/{cffi,curl_cffi}-*universal2.whl missing — Cloudflare-"
+  echo "    protected sites will keep 403ing on client Macs (requirements.txt note)"
+fi
 
 echo "==> 3/6 Check ffmpeg"
 # Bundle the STATIC universal ffmpeg+ffprobe from vendor/ — the old homebrew
@@ -102,6 +115,8 @@ pyinstaller \
   --add-data assets:assets \
   --hidden-import certifi --collect-data certifi \
   --collect-all yt_dlp_ejs \
+  --collect-all curl_cffi \
+  --collect-all cffi \
   $ADD_BINARY \
   "$PY_SCRIPT"
 
