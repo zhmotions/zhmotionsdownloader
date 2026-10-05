@@ -122,6 +122,7 @@ class FakeApp:
     def _remove_item(self, i): calls.append(("remove", i))
     def _sync_toolbar(self):   pass
     def _queue_menu(self, e):  pass
+    def _fetch_thumb(self, i): pass
 
 
 class Ev:

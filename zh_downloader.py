@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.34"
+APP_VER     = "6.6.35"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -145,10 +145,15 @@ def license_verify(key):
         return None, None, str(e)
 
 # -- Themes -----------------------------------------------------------------
+# Trimmed 2026-10-05 — had grown to 13 selectable themes (Graphite, Carbon,
+# Light, Cream, Sunset, Midnight, Forest, Mono Dark were never-requested
+# scope creep, no design behind any of them). Down to the 5 that were
+# actually designed on purpose: Fetchleaf (brand, default), macOS (Apple's
+# own palette), and Studio/Paper/Console (the three looks the redrawn
+# canvas window — QueueList, icon rail — was built around).
 THEMES = {
     # macOS — Apple's own system palette (Aqua blue accent, the exact greys the
-    # system UI uses). Default on Macs; the flat "Light" theme below is kept for
-    # anyone who prefers it and stays the default on Windows/Linux.
+    # system UI uses).
     "macOS": {
         "BG":"#f5f5f7","SURF":"#ffffff","SURF2":"#ececee","BORDER":"#d2d2d7",
         "ACCENT":"#2549e6","ACCENT2":"#1a37b8","MAROON":"#e4e9ff",
@@ -194,70 +199,10 @@ THEMES = {
         "HEADER":"#111a1f","INPUT":"#111a1f","LOG_BG":"#080d10","LOG_FG":"#5b727a",
         "ON_ACCENT":"#06231b",
     },
-    # Graphite — near-neutral: the only colour is on the primary button and the
-    # progress bar, everything else is paper and ink.
-    "Graphite": {
-        "BG":"#f6f6f7","SURF":"#ffffff","SURF2":"#eceef0","BORDER":"#dcdee1",
-        "ACCENT":"#26282c","ACCENT2":"#101113","MAROON":"#e8eaed",
-        "TEXT":"#1b1d20","MUTED":"#6c727a",
-        "GREEN":"#1f9254","YELLOW":"#b8860b","RED":"#c0392b","BLUE":"#3a6ea5","PURPLE":"#6b4fa8",
-        "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#fafafb","LOG_FG":"#5b6169",
-    },
-    # Carbon — dark first, for editors who keep the app open all day
-    "Carbon": {
-        "BG":"#16181c","SURF":"#1d2025","SURF2":"#24282e","BORDER":"#31363e",
-        "ACCENT":"#4c8dff","ACCENT2":"#3a76dd","MAROON":"#22303f",
-        "TEXT":"#e6e8ea","MUTED":"#8b929b",
-        "GREEN":"#4ec97a","YELLOW":"#e5b567","RED":"#ff6b6b","BLUE":"#4c8dff","PURPLE":"#b48ead",
-        "HEADER":"#1a1d22","INPUT":"#1d2025","LOG_BG":"#111318","LOG_FG":"#767d87",
-    },
-    # Default light — clean modern flat UI
-    "Light": {
-        "BG":"#f5f6f8","SURF":"#ffffff","SURF2":"#eceef2","BORDER":"#d6d9e0",
-        "ACCENT":"#2563eb","ACCENT2":"#1d4ed8","MAROON":"#dbeafe",
-        "TEXT":"#1f2937","MUTED":"#6b7280",
-        "GREEN":"#10b981","YELLOW":"#f59e0b","RED":"#ef4444","BLUE":"#3b82f6","PURPLE":"#8b5cf6",
-        "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#f8fafc","LOG_FG":"#475569",
-    },
-    "Cream": {
-        "BG":"#faf7f2","SURF":"#ffffff","SURF2":"#f0ebe2","BORDER":"#d4c5b0",
-        "ACCENT":"#d97706","ACCENT2":"#b45309","MAROON":"#fed7aa",
-        "TEXT":"#3d2914","MUTED":"#92715c",
-        "GREEN":"#16a34a","YELLOW":"#ca8a04","RED":"#dc2626","BLUE":"#0284c7","PURPLE":"#9333ea",
-        "HEADER":"#ffffff","INPUT":"#ffffff","LOG_BG":"#fdfbf7","LOG_FG":"#7a5a3a",
-    },
-    "Sunset": {
-        "BG":"#160800","SURF":"#1e0d02","SURF2":"#271205","BORDER":"#3d1e08",
-        "ACCENT":"#ff8c42","ACCENT2":"#ff6b35","MAROON":"#8b2500",
-        "TEXT":"#ffddc0","MUTED":"#7a4a2a",
-        "GREEN":"#6fcf97","YELLOW":"#f2c94c","RED":"#eb5757","BLUE":"#56ccf2","PURPLE":"#bb86fc",
-        "HEADER":"#2a0e00","INPUT":"#1e0d02","LOG_BG":"#0d0500","LOG_FG":"#5a3010",
-    },
-    "Midnight": {
-        "BG":"#0a0e1a","SURF":"#111729","SURF2":"#1a2238","BORDER":"#2a3550",
-        "ACCENT":"#5b9aff","ACCENT2":"#3d7fd6","MAROON":"#1f3a6e",
-        "TEXT":"#dde8ff","MUTED":"#5a6a8a",
-        "GREEN":"#34d399","YELLOW":"#fbbf24","RED":"#f87171","BLUE":"#60a5fa","PURPLE":"#a78bfa",
-        "HEADER":"#0d1428","INPUT":"#111729","LOG_BG":"#070b15","LOG_FG":"#3a4860",
-    },
-    "Forest": {
-        "BG":"#0c1612","SURF":"#152822","SURF2":"#1d3a30","BORDER":"#2a503f",
-        "ACCENT":"#7ed957","ACCENT2":"#5cb83d","MAROON":"#1d3d2a",
-        "TEXT":"#dff5e3","MUTED":"#5a7a68",
-        "GREEN":"#86efac","YELLOW":"#fde047","RED":"#fb7185","BLUE":"#5eead4","PURPLE":"#c084fc",
-        "HEADER":"#0f1d18","INPUT":"#152822","LOG_BG":"#070d0a","LOG_FG":"#3a5547",
-    },
-    "Mono Dark": {
-        "BG":"#1a1a1a","SURF":"#252525","SURF2":"#303030","BORDER":"#454545",
-        "ACCENT":"#e5e5e5","ACCENT2":"#cccccc","MAROON":"#3a3a3a",
-        "TEXT":"#f0f0f0","MUTED":"#888888",
-        "GREEN":"#a0d995","YELLOW":"#e8d56b","RED":"#e89090","BLUE":"#9bc8e8","PURPLE":"#c8a8e8",
-        "HEADER":"#202020","INPUT":"#252525","LOG_BG":"#101010","LOG_FG":"#555555",
-    },
 }
 
 # Active theme - mutated at runtime via set_theme()
-T = THEMES["Light"].copy()
+T = THEMES["Fetchleaf"].copy()
 
 # ── UI font system ─────────────────────────────────────────────────────────
 # Every widget used to hardcode _f(8-15). On macOS that renders 2-3 pt
@@ -321,10 +266,9 @@ def _on_accent():
 
 
 def _def_theme_name():
-    # Graphite everywhere now: near-neutral, so the only colour on screen is the
-    # primary button and a row's status. Carbon (dark) and macOS (blue) stay as
-    # choices in Settings.
-    return "Fetchleaf"      # the brand palette is the default now
+    # The brand palette is the default; macOS/Studio/Paper/Console stay as
+    # the other choices in Settings → Theme.
+    return "Fetchleaf"
 
 def _pinterest_master(url):
     """Pinterest HLS: turn a single-quality variant into the master playlist.
@@ -1935,7 +1879,7 @@ class App:
 
     # -- theme --------------------------------------------------------------
     def set_theme(self, name, refresh=True):
-        if name not in THEMES: name = "Light"
+        if name not in THEMES: name = _def_theme_name()
         T.update(THEMES[name])
         self.cfg["theme"] = name
         jsave(CFG_PATH, self.cfg)
@@ -4207,7 +4151,7 @@ class App:
         if getattr(self, "_gate_win", None):
             try: self._gate_win.lift(); self._gate_win.focus_force(); return
             except Exception: self._gate_win = None
-        T = THEMES.get(self.cfg.get("theme","Light"), THEMES["Light"])
+        T = THEMES.get(self.cfg.get("theme", _def_theme_name()), THEMES[_def_theme_name()])
         w = tk.Toplevel(self.root); self._gate_win = w
         w.title("Activate ZH Downloader")
         w.configure(bg=T["BG"]); w.resizable(False, False)
@@ -6558,6 +6502,33 @@ def _prepend_bundled_bins_to_path():
     if extra:
         os.environ["PATH"] = extra + sep + current
 
+def _set_dpi_aware_windows():
+    """Tell Windows this process handles its own DPI scaling — MUST run before
+    the first Tk window is created.
+
+    Without this, Windows bitmap-stretches the whole app on any >100%-scaled
+    display (the default on most Windows laptops/monitors: 125%, 150%...).
+    Tk still lays out at the wrong assumed DPI and the OS then stretches the
+    rendered bitmap, so padding/text/icons end up visibly mismatched —
+    "messy" — even though the exact same code renders crisp on macOS, which
+    has no such step (Tk there is Retina-aware on its own). Per-Monitor-v2
+    first (best: handles mixed-DPI multi-monitor setups and live changes),
+    falling back for older Windows."""
+    if os.name != "nt": return
+    try:
+        import ctypes
+        try:
+            # Windows 10 1703+
+            ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)  # PER_MONITOR_AWARE_V2
+        except Exception:
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+            except Exception:
+                ctypes.windll.user32.SetProcessDPIAware()  # Vista+ fallback
+    except Exception:
+        pass
+
+
 def _register_url_scheme_windows():
     """Register zhdownloader:// in HKCU at startup (Windows). The MSI writes this, but the
     PORTABLE .exe never did — so with the app closed, the extension's zhdownloader:// launch
@@ -6649,6 +6620,7 @@ def _pending_update_install():
 def main():
     """Staged startup so any optional feature failure can't crash app."""
     global HAS_DND
+    _set_dpi_aware_windows()   # must run before the first Tk window exists
     _pending_update_install()
     _prune_update_cache()
     _prune_caches()
