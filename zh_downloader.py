@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.36"
+APP_VER     = "6.6.37"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -295,6 +295,13 @@ def _error_hint(msg, url=""):
     if "canva.com" in u:
         return ("Canva builds the file on its own servers — click Canva's Download "
                 "button and let it finish; ZH then grabs the file, not the export job.")
+    if ("could not find" in m and "cookies database" in m) or \
+       ("could not copy" in m and "cookie" in m) or "could not find browser" in m:
+        browser = next((b for b in ("chrome","safari","firefox","edge","brave") if b in m), "your browser")
+        return (f"ZH can't read {browser.title()}'s cookies — macOS is blocking the read. "
+                f"System Settings → Privacy & Security → Full Disk Access, add ZH Downloader "
+                f"and turn it on (System Preferences → Security & Privacy on older macOS), "
+                f"then restart the app and try again.")
     if "only works when logged-in" in m or "login required" in m or "sign in to confirm" in m:
         site = u.split("/")[2] if u.startswith("http") and len(u.split("/")) > 2 else "this site"
         return (f"Set Cookies to your browser (Advanced options) and stay logged in to "

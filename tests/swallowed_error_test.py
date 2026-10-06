@@ -37,11 +37,13 @@ def eq(label, got, want):
 
 
 def run(err_text, cffi_available, succeed_on_impersonate=True,
-        url="https://example.com/x", ck="none", succeed_on_cookies=True):
+        url="https://example.com/x", ck="none", succeed_on_cookies=True,
+        retry_err_text=None):
     """One _run_video pass where yt-dlp SWALLOWS the failure (ignoreerrors):
     logs `err_text` via the opts logger, download() returns normally, no file.
     If a retry arrives with impersonate OR cookiesfrombrowser set, optionally
-    let it "succeed"."""
+    let it "succeed" — or fail with its own `retry_err_text` (defaults to the
+    same err_text) so the hint-on-double-failure path can be covered too."""
     attempts = []
 
     class FakeYDL:
@@ -60,7 +62,8 @@ def run(err_text, cffi_available, succeed_on_impersonate=True,
                 # already stamped item.done_f via the finished-status payload.
                 self.o["_item"].done_f = "/tmp/fake.mp4"
                 return
-            self.o["logger"].error(err_text)
+            is_retry = imp or cookies
+            self.o["logger"].error((retry_err_text if (is_retry and retry_err_text) else err_text))
 
     real_ydl = zhd.yt_dlp.YoutubeDL
     real_cffi = zhd._cffi_available
@@ -147,6 +150,24 @@ eq("yt bot-wall no cookies configured: no retry attempted", at, [None])
 eq("yt bot-wall no cookies configured: row marked error", status, "error")
 eq("yt bot-wall no cookies configured: hint still shown",
    any("Set Cookies to your browser" in m for m in logs), True)
+
+# 8b. Real field case: cookies ARE configured, but macOS blocks the actual
+#     cookie-database read (no Full Disk Access) — the retry's OWN failure
+#     must produce its own specific hint, not silence and not the stale
+#     "Set Cookies" hint from the first failure (that's what shipped in
+#     6.6.36 and regressed: last_err got overwritten by the cookie-read
+#     error, which _error_hint had no branch for — empty hint, bare
+#     "no media found").
+COOKIE_DB_ERR = ('ERROR: could not find chrome cookies database in '
+                  '"/Users/x/Library/Application Support/Google/Chrome"')
+at, logs, status, done = run(BOT, cffi_available=True, url=YT, ck="chrome",
+                              succeed_on_cookies=False, retry_err_text=COOKIE_DB_ERR)
+eq("cookie-db blocked: retry still attempted", at, [None, ("chrome",)])
+eq("cookie-db blocked: row marked error", status, "error")
+eq("cookie-db blocked: Full Disk Access hint shown, not silence",
+   any("Full Disk Access" in m for m in logs), True)
+eq("cookie-db blocked: NOT the stale generic Cookies hint",
+   any(m.startswith("[info] Set Cookies to your browser") for m in logs), False)
 
 # 8. Non-YouTube bot-wall-shaped message: never tries cookies (that retry is
 #    YouTube-specific — a cookie dropdown doesn't help a Vimeo/other site the
