@@ -457,7 +457,53 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     pingApp().then(ok => sendResponse({ ok }));
     return true;
   }
+
+  if (msg.type === "ZH_SEND_COOKIES") {
+    sendCookiesToApp().then(r => sendResponse(r));
+    return true;
+  }
 });
+
+// ── Send login cookies to the app ───────────────────────────────────────────
+// Fix for YouTube's "Sign in to confirm you're not a bot" wall: the app needs
+// real login cookies, but reading them straight from Chrome's profile needs
+// macOS Full Disk Access — an OS permission an ad-hoc-signed app can silently
+// lose on every rebuild. chrome.cookies runs inside Chrome's OWN permission
+// model instead (the "cookies" manifest permission), no OS file access at
+// all, so this always works regardless of what Full Disk Access is granted.
+async function youtubeCookiesNetscape() {
+  const cookies = await chrome.cookies.getAll({ domain: "youtube.com" });
+  if (!cookies.length) return null;
+  const farFuture = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365; // session cookies: 1yr out, not "already expired"
+  const lines = ["# Netscape HTTP Cookie File"];
+  for (const c of cookies) {
+    const domain = c.domain.startsWith(".") ? c.domain : "." + c.domain;
+    lines.push([
+      domain, "TRUE", c.path || "/", c.secure ? "TRUE" : "FALSE",
+      c.session ? farFuture : Math.floor(c.expirationDate || farFuture),
+      c.name, c.value,
+    ].join("\t"));
+  }
+  return { text: lines.join("\n") + "\n", count: cookies.length };
+}
+
+async function sendCookiesToApp() {
+  let built;
+  try { built = await youtubeCookiesNetscape(); }
+  catch { return { ok:false, err:"read_failed" }; }
+  if (!built) return { ok:false, err:"not_signed_in" };
+  try {
+    const r = await fetch("http://127.0.0.1:9613/cookies", {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ cookies_text: built.text, site: "youtube.com" }),
+    });
+    const d = await r.json();
+    return d.ok ? { ok:true, count: built.count } : { ok:false, err:"rejected" };
+  } catch (e) {
+    return { ok:false, err:"app_down" };
+  }
+}
 
 // ── Send to desktop app ────────────────────────────────────────────────────
 async function postToApp(url, referer, fmt, title) {

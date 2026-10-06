@@ -9,6 +9,7 @@ see change-log 2026-10-06). A plain file read needs no OS permission.
 import importlib.util
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
 
@@ -84,6 +85,47 @@ finally:
 app = zhd.App.__new__(zhd.App)
 app.cfg = {}
 eq("fresh cfg, no cookies_file key: still safe, empty", app._cookie_opts_for("file"), {})
+
+# -- _cookies_received: the extension's 🍪 Login button path ---------------
+# Redirect the module constant so the test never touches the real
+# ~/.zhdownloader-cookies.txt.
+_tmp_dir = tempfile.mkdtemp()
+_fake_cookies_path = pathlib.Path(_tmp_dir) / "cookies.txt"
+_real_cookies_path = zhd.COOKIES_FILE_PATH
+zhd.COOKIES_FILE_PATH = _fake_cookies_path
+try:
+    NETSCAPE2 = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1999999999\tSID\tabc\n"
+
+    app = zhd.App.__new__(zhd.App)
+    app.cfg = {}
+    app.logs = []
+    app.log = lambda m, *a, **k: app.logs.append(m)
+    notified = []
+    app._notify = lambda *a, **k: notified.append(a)
+    app.ck_var = type("V", (), {"get": lambda self: "none", "set": lambda self, v: setattr(self, "_v", v)})()
+
+    app._cookies_received(NETSCAPE2, "youtube.com")
+    eq("cookies_received: file actually written", _fake_cookies_path.read_text(), NETSCAPE2)
+    eq("cookies_received: cfg points at it", app.cfg.get("cookies_file"), str(_fake_cookies_path))
+    eq("cookies_received: cfg switched to file mode", app.cfg.get("cookies"), "file")
+    eq("cookies_received: live dropdown flipped to file too", app.ck_var._v, "file")
+    eq("cookies_received: user told (not silent)",
+       any("Got your" in m for m in app.logs), True)
+    eq("cookies_received: desktop notification fired", len(notified), 1)
+
+    # Second call, no ck_var yet (UI not built — e.g. extension talks to the
+    # app before the window finished constructing): must not crash.
+    app2 = zhd.App.__new__(zhd.App)
+    app2.cfg = {}
+    app2.logs = []
+    app2.log = lambda m, *a, **k: app2.logs.append(m)
+    app2._notify = lambda *a, **k: None
+    app2._cookies_received(NETSCAPE2, "youtube.com")
+    eq("cookies_received: works fine with no ck_var (UI not up yet)",
+       app2.cfg.get("cookies"), "file")
+finally:
+    zhd.COOKIES_FILE_PATH = _real_cookies_path
+    shutil.rmtree(_tmp_dir, ignore_errors=True)
 
 print()
 print(("%d FAILED, " % fails if fails else "") + "%d passed" % passes)

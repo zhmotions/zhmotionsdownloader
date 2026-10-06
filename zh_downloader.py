@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.39"
+APP_VER     = "6.6.40"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -74,6 +74,7 @@ HIST_PATH    = Path.home() / ".zhdownloader-history.json"
 STATS_PATH   = Path.home() / ".zhdownloader-stats.json"
 PARTS_DIR    = Path.home() / ".zhdownloader-parts"
 THUMBS_DIR   = Path.home() / ".zhdownloader-thumbs"
+COOKIES_FILE_PATH = Path.home() / ".zhdownloader-cookies.txt"
 
 THREADS         = 8
 MAX_HISTORY     = 500
@@ -1720,6 +1721,8 @@ class Bridge(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/adopt":
             return self._adopt()
+        if self.path == "/cookies":
+            return self._cookies()
         if self.path!="/download":
             self.send_response(404); self._c(); self.end_headers(); return
         if not self._origin_ok():                       # block websites
@@ -1776,6 +1779,31 @@ class Bridge(BaseHTTPRequestHandler):
         self.wfile.write(b'{"ok":true}')
         if path:
             self.app._mq.put(("adopt", (path, url, title, ref)))
+
+    def _cookies(self):
+        """Extension read the user's own cookies (chrome.cookies API — runs
+        inside Chrome's own permission model, no macOS Full Disk Access
+        involved at all) and hands them over as Netscape cookies.txt text.
+        Saves straight to the same cookies_file path the "file" option in
+        Advanced options reads — a user never has to install a separate
+        export extension or touch a file picker themselves."""
+        if not self._origin_ok():
+            self.send_response(403); self._c(); self.end_headers(); return
+        try:
+            n = min(int(self.headers.get("Content-Length", "0") or 0), 512 * 1024)
+            d = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(d, dict): d = {}
+        except Exception:
+            d = {}
+        text = str(d.get("cookies_text") or "")
+        site = (str(d.get("site") or "").strip())[:100]
+        self.send_response(200); self._c()
+        self.send_header("Content-Type","application/json"); self.end_headers()
+        if text.startswith("# Netscape HTTP Cookie File") and len(text) < 512 * 1024:
+            self.wfile.write(b'{"ok":true}')
+            self.app._mq.put(("cookies_received", (text, site)))
+        else:
+            self.wfile.write(b'{"ok":false,"err":"bad cookie text"}')
 
 # -- Main App ---------------------------------------------------------------
 class App:
@@ -2724,6 +2752,13 @@ class App:
         if self.ck_var.get() != "file":
             self._ck_prev = self.ck_var.get()
             return
+        # Already have a working path — e.g. the extension just sent one via
+        # /cookies, or the user picked "file" before and is just reselecting
+        # it. Don't nag them with a file dialog for nothing.
+        existing = self.cfg.get("cookies_file", "")
+        if existing and Path(existing).is_file():
+            self._ck_prev = "file"
+            return
         path = filedialog.askopenfilename(
             title="Pick your exported cookies.txt",
             filetypes=[("Cookies text file", "*.txt"), ("All files", "*.*")])
@@ -3225,6 +3260,8 @@ class App:
                     self._recv_ext(payload)
                 elif kind=="adopt":
                     self._adopt_file(*payload)
+                elif kind=="cookies_received":
+                    self._cookies_received(*payload)
                 elif kind=="hist_add":
                     self.history.add(payload)
                     if hasattr(self,"hist_tree"): self._hist_refresh()
@@ -3321,6 +3358,30 @@ class App:
         except Exception as e:
             self.log(f"[error] adopt failed: {e}")
             item.status = "error"; self._mq.put(("item_up", item))
+
+    def _cookies_received(self, text, site):
+        """Main thread: the extension read the user's own browser cookies
+        (chrome.cookies API — inside Chrome's permission model, no macOS
+        Full Disk Access needed) and sent them over. Save, point Cookies at
+        "file" automatically, and switch the live dropdown too if it's
+        already built — so YouTube's sign-in wall gets handled without the
+        user ever opening Settings or installing a separate export tool."""
+        try:
+            COOKIES_FILE_PATH.write_text(text, encoding="utf-8")
+        except Exception as e:
+            self.log(f"[warn] could not save cookies from the extension: {e}")
+            return
+        self.cfg["cookies_file"] = str(COOKIES_FILE_PATH)
+        self.cfg["cookies"] = "file"
+        jsave(CFG_PATH, self.cfg)
+        n = text.count("\n") - 1  # minus the "# Netscape..." header line
+        self.log(f"[info] Got your {site or 'browser'} login from the extension "
+                 f"({max(n,0)} cookies) — Cookies is now set to the file, no "
+                 f"Full Disk Access needed.")
+        if hasattr(self, "ck_var"):
+            self._ck_prev = "file"           # already-valid path → no re-prompt
+            self.ck_var.set("file")
+        self._notify("ZH Downloader", "YouTube login saved — sign-in-walled videos will work now.")
 
     def _recv_ext(self, payload):
         """Background receive — no window jump, no bell."""

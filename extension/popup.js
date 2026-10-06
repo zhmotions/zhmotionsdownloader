@@ -56,6 +56,22 @@ document.addEventListener("DOMContentLoaded", () => {
       showStatus(res?.ok ? "✓ Sent page to app!" : "✗ App not running", res?.ok);
     });
   });
+
+  // Hands the app your YouTube login cookies — the fix for "Sign in to
+  // confirm you're not a bot" on walled videos, with no file to export and
+  // no setting to find. Reads from chrome.cookies (just needs you to BE
+  // signed in to youtube.com in this browser, any tab or none at all).
+  document.getElementById("btn-cookies").addEventListener("click", (e) => {
+    const btn = e.currentTarget;
+    const prevText = btn.textContent;
+    btn.disabled = true; btn.textContent = "Sending…";
+    chrome.runtime.sendMessage({ type:"ZH_SEND_COOKIES" }, res => {
+      btn.disabled = false; btn.textContent = prevText;
+      if (res?.ok) showStatus(`✓ Login sent (${res.count||0} cookies) — try the video again`, true);
+      else if (res?.err === "not_signed_in") showStatus("✗ Sign in to youtube.com in this browser first", false);
+      else showStatus(res?.err === "app_down" ? "✗ Open ZH Downloader first" : "✗ Couldn't send login", false);
+    });
+  });
 });
 
 // ── Load tab info ──────────────────────────────────────────────────────────

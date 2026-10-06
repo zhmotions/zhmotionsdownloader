@@ -53,15 +53,16 @@ function makeCtx(opts = {}) {
     action: { setBadgeBackgroundColor: () => {}, setBadgeText: () => {} },
     contextMenus: { create: () => {}, update: () => {}, onClicked: on("menu") },
     notifications: { create: o => rec.notifications.push(o.title) },
+    cookies: { getAll: () => Promise.resolve(opts.cookies || []) },
   };
 
   const ctx = {
     chrome, console, JSON, Date, Math, Object, Promise, URL, parseInt, String, Error, AbortSignal,
     setTimeout: fn => { fn(); return 0; },        // instant timers: 30 x 2s flush loop runs at once
     clearTimeout: () => {},
-    fetch: async (url) => {
+    fetch: async (url, init) => {
       if (!rec.pingOk) throw new Error("offline");
-      if (!url.endsWith("/ping")) rec.posted.push(url);
+      if (!url.endsWith("/ping")) { rec.posted.push(url); rec.lastBody = init && init.body; }
       return { json: async () => ({ ok: true, status: "queued" }) };
     },
   };
@@ -195,6 +196,56 @@ function rechandlers(ctx) { return _handlers.get(ctx) || []; }
     // an interrupted one is just forgotten, no POST
     await onChanged({ id: 2, state: { current: "interrupted" } });
     eq("interrupted job forgotten, not adopted", Object.keys(rec.session.adopt || {}), []);
+  }
+
+  // ── 7. YouTube cookie export — the Full-Disk-Access-free fix ─────────────
+  // chrome.cookies reads inside Chrome's own permission model (no macOS TCC
+  // involved), formats as a Netscape cookies.txt, POSTs it to /cookies.
+  {
+    const COOKIES = [
+      { domain: ".youtube.com", hostOnly: false, path: "/", secure: true, session: false,
+        expirationDate: 1999999999, name: "SID", value: "abc123" },
+      { domain: "www.youtube.com", hostOnly: true, path: "/watch", secure: true, session: true,
+        name: "__Secure-1PSID", value: "xyz789" },
+    ];
+    const { ctx, rec } = makeCtx({ pingOk: true, cookies: COOKIES });
+
+    const built = await ctx.youtubeCookiesNetscape();
+    eq("netscape file: header line", built.text.split("\n")[0], "# Netscape HTTP Cookie File");
+    eq("netscape file: right cookie count", built.count, 2);
+    eq("netscape file: domain-wide cookie gets includeSubdomains TRUE",
+       built.text.includes(".youtube.com\tTRUE\t/\tTRUE\t1999999999\tSID\tabc123"), true);
+    eq("netscape file: host-only cookie still gets a dot-prefixed domain field (Netscape format requires it)",
+       built.text.includes(".www.youtube.com\tTRUE\t/watch\tTRUE\t"), true);
+    eq("netscape file: session cookie gets a future expiry, not 0 (would read as already-expired)",
+       /__Secure-1PSID/.test(built.text) && !built.text.includes("\t0\t__Secure-1PSID"), true);
+
+    const sent = await ctx.sendCookiesToApp();
+    eq("sendCookiesToApp: posted to /cookies", rec.posted.some(u => u.endsWith("/cookies")), true);
+    eq("sendCookiesToApp: reports ok + count", sent, { ok: true, count: 2 });
+    const body = JSON.parse(rec.lastBody);
+    eq("sendCookiesToApp: body carries the netscape text + site", body.site, "youtube.com");
+    eq("sendCookiesToApp: body text matches what was built", body.cookies_text, built.text);
+
+    // ZH_SEND_COOKIES message wiring (the 🍪 Login popup button)
+    const resp = await new Promise(res =>
+      rec.listeners.msg.forEach(h => h({ type: "ZH_SEND_COOKIES" }, {}, res)));
+    eq("ZH_SEND_COOKIES message: same result as calling it directly", resp, { ok: true, count: 2 });
+  }
+
+  // ── 7b. not signed in to YouTube at all → no cookies, clear error, no POST ─
+  {
+    const { ctx, rec } = makeCtx({ pingOk: true, cookies: [] });
+    eq("no youtube cookies: nothing built", await ctx.youtubeCookiesNetscape(), null);
+    eq("sendCookiesToApp: not_signed_in, no POST attempted",
+       await ctx.sendCookiesToApp(), { ok: false, err: "not_signed_in" });
+    eq("confirmed: nothing was posted", rec.posted, []);
+  }
+
+  // ── 7c. app not running → distinct error, not confused with "not signed in" ─
+  {
+    const { ctx } = makeCtx({ pingOk: false, cookies: [{ domain: ".youtube.com", path: "/", name: "a", value: "b", session: true }] });
+    eq("app down: app_down, not not_signed_in", await ctx.sendCookiesToApp(), { ok: false, err: "app_down" });
   }
 
   console.log("\n" + (fails ? fails + " FAILED, " : "") + passes + " passed");

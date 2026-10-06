@@ -19,20 +19,29 @@
 #                       to reach _error_hint (not a hardcoded "unsupported url"),
 #                       a Cloudflare anti-bot 403 gets one retry with curl_cffi
 #                       impersonation, and YouTube's "Sign in to confirm you're
-#                       not a bot" gets one retry with the Cookies dropdown's
-#                       browser (only when one is actually picked) — all
-#                       before the row is marked error; a retry that fails on
-#                       the cookie READ itself (no Full Disk Access) gets its
-#                       own hint instead of staying silent
+#                       not a bot" (or ANY other cookie-less failure — not
+#                       pattern-matched to that one phrase, YouTube's wording
+#                       varies) gets one retry with the Cookies dropdown's
+#                       browser or cookies.txt file, before the row is marked
+#                       error; a retry that fails on the cookie READ itself
+#                       (no Full Disk Access) gets its own hint instead of
+#                       staying silent
 #   cookie_file_test.py Cookies dropdown's "file" option — _cookie_opts_for
 #                       picks cookiefile over cookiesfrombrowser, missing/bad
-#                       paths degrade to {} instead of crashing, and
+#                       paths degrade to {} instead of crashing,
 #                       _cookie_header_for reads a real Netscape cookies.txt
-#                       (right domain only, cached after the first read)
+#                       (right domain only, cached after the first read), and
+#                       _cookies_received (the extension's 🍪 Login button
+#                       landing on the app side) saves the file, points
+#                       Cookies at it, and flips the live dropdown — with or
+#                       without the Settings UI having been built yet
 #   bg.test.js          runs extension/background.js inside a node vm with a
 #                       stubbed chrome API (sniffed-stream persistence across a
 #                       service-worker restart, pending-queue TTL, hand-back of
-#                       intercepted downloads, media-URL matching)
+#                       intercepted downloads, media-URL matching, and the 🍪
+#                       Login button: chrome.cookies → Netscape cookies.txt →
+#                       POST /cookies, not-signed-in and app-not-running
+#                       reported as distinct errors)
 #   inject.test.html    loads extension/content.js three times in headless
 #                       Chrome — fresh tab, re-inject over a LIVE copy, and
 #                       re-inject over a STALE one (extension updated) — and
