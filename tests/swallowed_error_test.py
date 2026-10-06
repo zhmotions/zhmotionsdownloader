@@ -169,6 +169,17 @@ eq("cookie-db blocked: Full Disk Access hint shown, not silence",
 eq("cookie-db blocked: NOT the stale generic Cookies hint",
    any(m.startswith("[info] Set Cookies to your browser") for m in logs), False)
 
+# 9. Real second field case: NOT the bot-wall text at all — android_vr/etc
+#    all got PoToken-skipped, yt-dlp fell back to a legacy itag, and THAT
+#    403'd downloading. Different wording, same fix: the retry isn't gated
+#    on "sign in to confirm" specifically any more — any cookie-less YouTube
+#    failure gets the one retry when a Cookies source is picked.
+GENERIC_403 = "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+at, logs, status, done = run(GENERIC_403, cffi_available=True, url=YT, ck="chrome",
+                              succeed_on_cookies=True)
+eq("yt generic 403 (not bot-wall text): retry still fires", at, [None, ("chrome",)])
+eq("yt generic 403: retry succeeded — file landed", done, "/tmp/fake.mp4")
+
 # 8. Non-YouTube bot-wall-shaped message: never tries cookies (that retry is
 #    YouTube-specific — a cookie dropdown doesn't help a Vimeo/other site the
 #    same way, and _is_cookie_err/Facebook-flip already own those cases).

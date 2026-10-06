@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.38"
+APP_VER     = "6.6.39"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -5032,20 +5032,23 @@ class App:
                         pass
                     last_err = log2.last_err or last_err
                 # YouTube's android_vr/tv_simply/mweb/tv/visionos clients all
-                # skip PoToken by staying cookie-less — usually enough. But
-                # when YouTube puts up a full bot-check ("Sign in to confirm
-                # you're not a bot"), every cookie-less client fails the same
-                # way, and the app was only ever TELLING the user to set
-                # Cookies and try again by hand. If a browser is already
-                # picked in the Cookies dropdown, just use it — one retry.
+                # skip PoToken by staying cookie-less — usually enough. But a
+                # cookie-less attempt can fail several different ways: the
+                # explicit "Sign in to confirm you're not a bot" wall, or
+                # every PoToken-needing client getting skipped and whatever
+                # fallback format (e.g. legacy itag 18) is left 403ing on the
+                # actual download — different text, same root cause, same
+                # fix. Rather than chase each new wording one at a time,
+                # retry ONCE with cookies for ANY cookie-less YouTube failure
+                # when a source is actually picked in the Cookies dropdown —
+                # worst case it fails again and we're no worse off.
                 is_yt_url = any(h in url.lower() for h in ("youtube.com", "youtu.be"))
-                if is_yt_url and "cookiesfrombrowser" not in opts and "cookiefile" not in opts and \
-                   "sign in to confirm" in last_err.lower():
+                if is_yt_url and "cookiesfrombrowser" not in opts and "cookiefile" not in opts:
                     ck = self.ck_var.get()
                     cookie_opts = self._cookie_opts_for(ck) if ck and ck != "none" else {}
                     if cookie_opts:
                         how = "a cookies.txt file" if "cookiefile" in cookie_opts else f"{ck} cookies"
-                        self.log(f"[info] YouTube wants sign-in — retrying with {how}…")
+                        self.log(f"[info] YouTube blocked the cookie-less attempt — retrying with {how}…")
                         opts2 = dict(opts); opts2.update(cookie_opts)
                         log2 = _Log(self); opts2["logger"] = log2
                         try:
