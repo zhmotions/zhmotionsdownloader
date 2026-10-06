@@ -21,7 +21,14 @@
 #                       impersonation, and YouTube's "Sign in to confirm you're
 #                       not a bot" gets one retry with the Cookies dropdown's
 #                       browser (only when one is actually picked) — all
-#                       before the row is marked error
+#                       before the row is marked error; a retry that fails on
+#                       the cookie READ itself (no Full Disk Access) gets its
+#                       own hint instead of staying silent
+#   cookie_file_test.py Cookies dropdown's "file" option — _cookie_opts_for
+#                       picks cookiefile over cookiesfrombrowser, missing/bad
+#                       paths degrade to {} instead of crashing, and
+#                       _cookie_header_for reads a real Netscape cookies.txt
+#                       (right domain only, cached after the first read)
 #   bg.test.js          runs extension/background.js inside a node vm with a
 #                       stubbed chrome API (sniffed-stream persistence across a
 #                       service-worker restart, pending-queue TTL, hand-back of
@@ -54,6 +61,10 @@ python3 "$here/row_actions_test.py"
 echo
 echo "== swallowed-failure hint + Cloudflare impersonation retry =="
 python3 "$here/swallowed_error_test.py"
+
+echo
+echo "== cookies.txt file option (_cookie_opts_for / _cookie_header_for) =="
+python3 "$here/cookie_file_test.py"
 
 echo
 echo "== file downloader (local server: ranges, resume, bad names) =="

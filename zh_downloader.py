@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.37"
+APP_VER     = "6.6.38"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -299,9 +299,10 @@ def _error_hint(msg, url=""):
        ("could not copy" in m and "cookie" in m) or "could not find browser" in m:
         browser = next((b for b in ("chrome","safari","firefox","edge","brave") if b in m), "your browser")
         return (f"ZH can't read {browser.title()}'s cookies — macOS is blocking the read. "
-                f"System Settings → Privacy & Security → Full Disk Access, add ZH Downloader "
-                f"and turn it on (System Preferences → Security & Privacy on older macOS), "
-                f"then restart the app and try again.")
+                f"Either System Settings → Privacy & Security → Full Disk Access, add ZH "
+                f"Downloader and turn it on (System Preferences → Security & Privacy on "
+                f"older macOS), then restart the app — or switch Cookies to \"file\" and "
+                f"pick an exported cookies.txt instead; that needs no permission at all.")
     if "only works when logged-in" in m or "login required" in m or "sign in to confirm" in m:
         site = u.split("/")[2] if u.startswith("http") and len(u.split("/")) > 2 else "this site"
         return (f"Set Cookies to your browser (Advanced options) and stay logged in to "
@@ -2138,8 +2139,11 @@ class App:
         tk.Label(opt, text="Cookies", bg=T["SURF"], fg=T["MUTED"],
                  font=_f(9,"bold")).grid(row=0,column=4,sticky="w",padx=(0,6))
         self.ck_var = tk.StringVar(value=self.cfg.get("cookies","none"))
-        RoundedSelect(opt, self.ck_var, ["none","chrome","safari","firefox","edge","brave"],
+        self._ck_prev = self.ck_var.get()
+        RoundedSelect(opt, self.ck_var,
+                      ["none","chrome","safari","firefox","edge","brave","file"],
                       width=110).grid(row=0,column=5,sticky="w")
+        self.ck_var.trace_add("write", lambda *a: self._on_cookies_changed())
 
         chk = tk.Frame(adv, bg=T["SURF"]); chk.pack(fill="x", padx=14, pady=(2,6))
         self.sub_var   = tk.BooleanVar()
@@ -2709,6 +2713,27 @@ class App:
         if   platform.system()=="Darwin":  subprocess.run(["open",p])
         elif platform.system()=="Windows": os.startfile(p)
         else:                              subprocess.run(["xdg-open",p])
+
+    def _on_cookies_changed(self):
+        """Cookies dropdown → "file": prompt for an exported cookies.txt right
+        away. Sidesteps browser cookie extraction's OS permission entirely
+        (macOS Full Disk Access, which an ad-hoc-signed app can silently lose
+        on every rebuild) — this is just a plain file read. Export one with
+        a browser extension like "Get cookies.txt LOCALLY", youtube.com
+        while signed in. Cancel → back to whatever was picked before."""
+        if self.ck_var.get() != "file":
+            self._ck_prev = self.ck_var.get()
+            return
+        path = filedialog.askopenfilename(
+            title="Pick your exported cookies.txt",
+            filetypes=[("Cookies text file", "*.txt"), ("All files", "*.*")])
+        if path:
+            self.cfg["cookies_file"] = path
+            jsave(CFG_PATH, self.cfg)
+            self._ck_prev = "file"
+            self._notice(f"Using cookies from:\n{path}", "Cookies file")
+        else:
+            self.ck_var.set(self._ck_prev)
 
     # -- log ----------------------------------------------------------------
     def log(self, msg, tag=None):
@@ -4706,6 +4731,17 @@ class App:
             item.status="done"; item.pct=100
             self._mq.put(("item_up", item))
 
+    def _cookie_opts_for(self, ck):
+        """{"cookiesfrombrowser": (ck,)} normally, or {"cookiefile": path}
+        when the Cookies dropdown is "file" — an exported cookies.txt sidesteps
+        macOS Full Disk Access entirely (plain file read, no TCC involved),
+        which cookiesfrombrowser needs and can silently lose across rebuilds
+        of an ad-hoc-signed app. {} if "file" is picked but none is set yet."""
+        if ck == "file":
+            path = self.cfg.get("cookies_file", "")
+            return {"cookiefile": path} if path and Path(path).is_file() else {}
+        return {"cookiesfrombrowser": (ck,)}
+
     # -- ydl opts -----------------------------------------------------------
     def _ydl_opts(self, out, fk, item, url=""):
         f = FMTS[fk]
@@ -4883,7 +4919,7 @@ class App:
                 if any(h in url_l for h in ("cms-public", "footage-hls")):
                     self.log("[info] public CDN stream — browser cookies not needed, skipping")
                 else:
-                    opts["cookiesfrombrowser"] = (ck,)
+                    opts.update(self._cookie_opts_for(ck))
         # Merge output format (yt-dlp Merger uses -c copy — fast, no quality loss)
         if "merge" in f and not is_hls: opts["merge_output_format"]=f["merge"]
         if is_hls:
@@ -5003,12 +5039,14 @@ class App:
                 # Cookies and try again by hand. If a browser is already
                 # picked in the Cookies dropdown, just use it — one retry.
                 is_yt_url = any(h in url.lower() for h in ("youtube.com", "youtu.be"))
-                if is_yt_url and "cookiesfrombrowser" not in opts and \
+                if is_yt_url and "cookiesfrombrowser" not in opts and "cookiefile" not in opts and \
                    "sign in to confirm" in last_err.lower():
                     ck = self.ck_var.get()
-                    if ck and ck != "none":
-                        self.log(f"[info] YouTube wants sign-in — retrying with {ck} cookies…")
-                        opts2 = dict(opts); opts2["cookiesfrombrowser"] = (ck,)
+                    cookie_opts = self._cookie_opts_for(ck) if ck and ck != "none" else {}
+                    if cookie_opts:
+                        how = "a cookies.txt file" if "cookiefile" in cookie_opts else f"{ck} cookies"
+                        self.log(f"[info] YouTube wants sign-in — retrying with {how}…")
+                        opts2 = dict(opts); opts2.update(cookie_opts)
                         log2 = _Log(self); opts2["logger"] = log2
                         try:
                             _try(opts2)
@@ -5500,10 +5538,16 @@ class App:
         try:
             host = urllib.parse.urlsplit(url).hostname or ""
             if not host: return ""
-            from yt_dlp.cookies import extract_cookies_from_browser
             jar = self._cookie_jar_cache.get(ck) if hasattr(self, "_cookie_jar_cache") else None
             if jar is None:
-                jar = extract_cookies_from_browser(ck)
+                if ck == "file":
+                    path = self.cfg.get("cookies_file", "")
+                    if not path or not Path(path).is_file(): return ""
+                    from yt_dlp.cookies import YoutubeDLCookieJar
+                    jar = YoutubeDLCookieJar(path); jar.load(ignore_discard=True, ignore_expires=True)
+                else:
+                    from yt_dlp.cookies import extract_cookies_from_browser
+                    jar = extract_cookies_from_browser(ck)
                 if not hasattr(self, "_cookie_jar_cache"): self._cookie_jar_cache = {}
                 self._cookie_jar_cache[ck] = jar
             bits = []
@@ -5513,7 +5557,8 @@ class App:
                     bits.append("%s=%s" % (c.name, c.value))
             return "; ".join(bits[:60])
         except Exception as e:
-            self.log(f"[warn] could not read {ck} cookies for this file: {e}")
+            src = "the cookies.txt file" if ck == "file" else f"{ck} cookies"
+            self.log(f"[warn] could not read {src} for this file: {e}")
             return ""
 
     def _downloadable_file(self, url):
