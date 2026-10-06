@@ -36,10 +36,12 @@ def eq(label, got, want):
           ("" if ok else "  (want " + repr(want) + ")"))
 
 
-def run(err_text, cffi_available, succeed_on_impersonate=True):
+def run(err_text, cffi_available, succeed_on_impersonate=True,
+        url="https://example.com/x", ck="none", succeed_on_cookies=True):
     """One _run_video pass where yt-dlp SWALLOWS the failure (ignoreerrors):
     logs `err_text` via the opts logger, download() returns normally, no file.
-    If a retry arrives with impersonate set, optionally let it "succeed"."""
+    If a retry arrives with impersonate OR cookiesfrombrowser set, optionally
+    let it "succeed"."""
     attempts = []
 
     class FakeYDL:
@@ -51,8 +53,9 @@ def run(err_text, cffi_available, succeed_on_impersonate=True):
             return False
         def download(self, urls):
             imp = self.o.get("impersonate")
-            attempts.append(imp)
-            if imp and succeed_on_impersonate:
+            cookies = self.o.get("cookiesfrombrowser")
+            attempts.append(imp or cookies)
+            if (imp and succeed_on_impersonate) or (cookies and succeed_on_cookies):
                 # "succeeds" the way a real yt-dlp run does: the progress hook
                 # already stamped item.done_f via the finished-status payload.
                 self.o["_item"].done_f = "/tmp/fake.mp4"
@@ -70,7 +73,8 @@ def run(err_text, cffi_available, succeed_on_impersonate=True):
         app._paused = False
         app.logs = []
         app.log = lambda m, *a, **k: app.logs.append(m)
-        item = zhd.DL("https://example.com/x", 0, 0, "")
+        app.ck_var = type("V", (), {"get": lambda self: ck})()
+        item = zhd.DL(url, 0, 0, "")
         item.status = "downloading"
         item.done_f = None
         item.stop_ev = threading.Event()
@@ -82,7 +86,7 @@ def run(err_text, cffi_available, succeed_on_impersonate=True):
         app._rename_if_uuid = lambda *a, **k: None
         app._cleanup_intermediates = lambda *a, **k: None
         app.ff = None
-        app._run_video("https://example.com/x", "/tmp", "hd", item)
+        app._run_video(url, "/tmp", "hd", item)
         return attempts, app.logs, item.status, item.done_f
     finally:
         zhd.yt_dlp.YoutubeDL = real_ydl
@@ -118,6 +122,38 @@ eq("cloudflare both fail: Cloudflare-specific hint shown",
 at, logs, status, done = run(CF, cffi_available=False)
 eq("no curl_cffi: no retry attempted", at, [None])
 eq("no curl_cffi: row marked error", status, "error")
+
+YT = "https://www.youtube.com/watch?v=abc123"
+
+# 5. YouTube bot-wall, a browser IS picked in Cookies: one retry, succeeds.
+at, logs, status, done = run(BOT, cffi_available=True, url=YT, ck="chrome",
+                              succeed_on_cookies=True)
+eq("yt bot-wall+cookies: two attempts, second w/ chrome cookies", at, [None, ("chrome",)])
+eq("yt bot-wall+cookies: retry succeeded — file landed", done, "/tmp/fake.mp4")
+eq("yt bot-wall+cookies: row marked done, not error", status, "done")
+
+# 6. YouTube bot-wall, cookies retry ALSO fails: one retry, then the hint.
+at, logs, status, done = run(BOT, cffi_available=True, url=YT, ck="chrome",
+                              succeed_on_cookies=False)
+eq("yt bot-wall+cookies both fail: two attempts", at, [None, ("chrome",)])
+eq("yt bot-wall+cookies both fail: row marked error", status, "error")
+eq("yt bot-wall+cookies both fail: cookie hint still shown",
+   any("Set Cookies to your browser" in m for m in logs), True)
+
+# 7. YouTube bot-wall, Cookies dropdown still "none": no retry — nothing to
+#    retry WITH — same single-attempt, hint-only behaviour as before.
+at, logs, status, done = run(BOT, cffi_available=True, url=YT, ck="none")
+eq("yt bot-wall no cookies configured: no retry attempted", at, [None])
+eq("yt bot-wall no cookies configured: row marked error", status, "error")
+eq("yt bot-wall no cookies configured: hint still shown",
+   any("Set Cookies to your browser" in m for m in logs), True)
+
+# 8. Non-YouTube bot-wall-shaped message: never tries cookies (that retry is
+#    YouTube-specific — a cookie dropdown doesn't help a Vimeo/other site the
+#    same way, and _is_cookie_err/Facebook-flip already own those cases).
+at, logs, status, done = run(BOT.replace("youtube", "othersite"), cffi_available=True,
+                              url="https://othersite.example/v/abc123", ck="chrome")
+eq("non-yt bot-wall: no cookie retry attempted", at, [None])
 
 print()
 print(("%d FAILED, " % fails if fails else "") + "%d passed" % passes)

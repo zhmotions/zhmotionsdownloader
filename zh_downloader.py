@@ -61,7 +61,7 @@ except ImportError:
 
 # -- Constants --------------------------------------------------------------
 APP_NAME    = "ZH Downloader"
-APP_VER     = "6.6.35"
+APP_VER     = "6.6.36"
 APP_AUTHOR  = "ZH Motions"
 APP_URL     = "https://zhmotions.com"
 BRIDGE_PORT = 9613
@@ -4988,6 +4988,28 @@ class App:
                     except Exception:
                         pass
                     last_err = log2.last_err or last_err
+                # YouTube's android_vr/tv_simply/mweb/tv/visionos clients all
+                # skip PoToken by staying cookie-less — usually enough. But
+                # when YouTube puts up a full bot-check ("Sign in to confirm
+                # you're not a bot"), every cookie-less client fails the same
+                # way, and the app was only ever TELLING the user to set
+                # Cookies and try again by hand. If a browser is already
+                # picked in the Cookies dropdown, just use it — one retry.
+                is_yt_url = any(h in url.lower() for h in ("youtube.com", "youtu.be"))
+                if is_yt_url and "cookiesfrombrowser" not in opts and \
+                   "sign in to confirm" in last_err.lower():
+                    ck = self.ck_var.get()
+                    if ck and ck != "none":
+                        self.log(f"[info] YouTube wants sign-in — retrying with {ck} cookies…")
+                        opts2 = dict(opts); opts2["cookiesfrombrowser"] = (ck,)
+                        log2 = _Log(self); opts2["logger"] = log2
+                        try:
+                            _try(opts2)
+                        except yt_dlp.utils.DownloadCancelled:
+                            raise
+                        except Exception:
+                            pass
+                        last_err = log2.last_err or last_err
                 if not item.done_f:
                     if self._fallback_to_file(url, out, item, "no video in the page"):
                         return

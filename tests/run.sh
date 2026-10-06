@@ -17,8 +17,11 @@
 #   swallowed_error_test.py  _run_video with ignoreerrors=True swallowing the
 #                       failure (yt-dlp logs, doesn't raise): the real error has
 #                       to reach _error_hint (not a hardcoded "unsupported url"),
-#                       and a Cloudflare anti-bot 403 gets one retry with
-#                       curl_cffi impersonation before the row is marked error
+#                       a Cloudflare anti-bot 403 gets one retry with curl_cffi
+#                       impersonation, and YouTube's "Sign in to confirm you're
+#                       not a bot" gets one retry with the Cookies dropdown's
+#                       browser (only when one is actually picked) — all
+#                       before the row is marked error
 #   bg.test.js          runs extension/background.js inside a node vm with a
 #                       stubbed chrome API (sniffed-stream persistence across a
 #                       service-worker restart, pending-queue TTL, hand-back of
